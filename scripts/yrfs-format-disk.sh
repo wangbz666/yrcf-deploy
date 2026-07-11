@@ -42,15 +42,28 @@ check_fstab_exists() {
     # 获取磁盘 UUID
     uuid=$(blkid -s UUID -o value "${disk}" 2>/dev/null || true)
 
-    # 检查设备名
-    if grep -qw "${disk}" /etc/fstab; then
-        echo "ERROR: ${disk} already exists in /etc/fstab (device)"
-        return 1
-    fi
+    # 精确检查 fstab 第一列中的设备路径或 UUID
+    if awk -v disk="${disk}" -v uuid="${uuid}" '
+        /^[[:space:]]*#/ || NF == 0 { next }
+        {
+            source = $1
+            if (source == disk) {
+                found = 1
+                next
+            }
 
-    # 检查 UUID
-    if [[ -n "${uuid}" ]] && grep -qw "${uuid}" /etc/fstab; then
-        echo "ERROR: ${disk} (UUID=${uuid}) already exists in /etc/fstab"
+            if (uuid != "" && source ~ /^UUID=/) {
+                fstab_uuid = source
+                sub(/^UUID=/, "", fstab_uuid)
+                gsub(/["\047]/, "", fstab_uuid)
+                if (fstab_uuid == uuid) {
+                    found = 1
+                }
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    ' /etc/fstab; then
+        echo "ERROR: ${disk} or its UUID already exists in /etc/fstab"
         return 1
     fi
 
@@ -107,6 +120,33 @@ done < "${CONFIG_FILE}"
 [[ ${#OSS_DISKS[@]} -eq 0 ]] && { echo "ERROR: oss_disk empty"; exit 1; }
 [[ -z "${ROOT_PASS}" ]] && { echo "ERROR: root_password empty"; exit 1; }
 
+[[ ${#MDS_NODES[@]} -ne ${#MDS_DISKS[@]} ]] && {
+    echo "ERROR: mds_ip count does not match mds_disk group count"
+    exit 1
+}
+[[ ${#OSS_NODES[@]} -ne ${#OSS_DISKS[@]} ]] && {
+    echo "ERROR: oss_ip count does not match oss_disk group count"
+    exit 1
+}
+
+for idx in "${!MDS_DISKS[@]}"; do
+    disk_group="${MDS_DISKS[$idx]//,/}"
+    disk_group="${disk_group//[[:space:]]/}"
+    [[ -z "${disk_group}" ]] && {
+        echo "ERROR: mds_disk group ${idx} has no disks"
+        exit 1
+    }
+done
+
+for idx in "${!OSS_DISKS[@]}"; do
+    disk_group="${OSS_DISKS[$idx]//,/}"
+    disk_group="${disk_group//[[:space:]]/}"
+    [[ -z "${disk_group}" ]] && {
+        echo "ERROR: oss_disk group ${idx} has no disks"
+        exit 1
+    }
+done
+
 debug "MDS_NODES: ${MDS_NODES[*]}"
 debug "OSS_NODES: ${OSS_NODES[*]}"
 
@@ -137,9 +177,20 @@ $(declare -f check_fstab_exists)
 set -euxo pipefail
 echo "====== NODE: ${primary_ip} ======"
 
-# 4.1 检查磁盘是否已挂载
+# 4.1 检查磁盘设备、挂载状态和 fstab
+command -v findmnt >/dev/null
 for disk in \$(echo "${disks}" | tr ',' ' '); do
-    if mount | grep -q "\${disk}"; then
+    if [[ ! -e "\${disk}" ]]; then
+        echo "ERROR: Disk \${disk} does not exist"
+        exit 1
+    fi
+
+    if [[ ! -b "\${disk}" ]]; then
+        echo "ERROR: Disk \${disk} is not a block device"
+        exit 1
+    fi
+
+    if findmnt -rn -S "\${disk}" >/dev/null; then
         echo "ERROR: Disk \${disk} is already mounted"
         exit 1
     fi
@@ -178,9 +229,20 @@ $(declare -f check_fstab_exists)
 set -euxo pipefail
 echo "====== NODE: ${primary_ip} ======"
 
-# 4.1 检查磁盘是否已挂载
+# 4.1 检查磁盘设备、挂载状态和 fstab
+command -v findmnt >/dev/null
 for disk in \$(echo "${disks}" | tr ',' ' '); do
-    if mount | grep -q "\${disk}"; then
+    if [[ ! -e "\${disk}" ]]; then
+        echo "ERROR: Disk \${disk} does not exist"
+        exit 1
+    fi
+
+    if [[ ! -b "\${disk}" ]]; then
+        echo "ERROR: Disk \${disk} is not a block device"
+        exit 1
+    fi
+
+    if findmnt -rn -S "\${disk}" >/dev/null; then
         echo "ERROR: Disk \${disk} is already mounted"
         exit 1
     fi
@@ -206,9 +268,56 @@ done
 ################################ 4.7 所有节点 mount -a ###############################
 for node in "${ALL_NODES[@]}"; do
     primary_ip="${node%%,*}"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" "mount -a && lsblk" 2>&1)
-    status=$?
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" "mount -a && lsblk" 2>&1); then
+        status=0
+    else
+        status=$?
+        log "${primary_ip}" "Mount and verify" "${out}" "" "${status}"
+        echo "ERROR: mount -a failed for ${primary_ip}"
+        exit "${status}"
+    fi
     log "${primary_ip}" "Mount and verify" "${out}" "" "${status}"
+done
+
+################################ 4.8 验证所有预期挂载点 ###############################
+for idx in "${!MDS_NODES[@]}"; do
+    node="${MDS_NODES[$idx]}"
+    disks="${MDS_DISKS[$idx]}"
+    primary_ip="${node%%,*}"
+    IFS=',' read -ra disk_group <<< "${disks}"
+    disk_count=${#disk_group[@]}
+
+    sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF | tee -a "${LOG_FILE}"
+set -euxo pipefail
+command -v findmnt >/dev/null
+for ((i=0; i<${disk_count}; i++)); do
+    mountpoint="/data/mds\${i}"
+    if ! findmnt -rn -M "\${mountpoint}" >/dev/null; then
+        echo "ERROR: Expected mount point \${mountpoint} is not mounted"
+        exit 1
+    fi
+done
+EOF
+done
+
+for idx in "${!OSS_NODES[@]}"; do
+    node="${OSS_NODES[$idx]}"
+    disks="${OSS_DISKS[$idx]}"
+    primary_ip="${node%%,*}"
+    IFS=',' read -ra disk_group <<< "${disks}"
+    disk_count=${#disk_group[@]}
+
+    sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF | tee -a "${LOG_FILE}"
+set -euxo pipefail
+command -v findmnt >/dev/null
+for ((i=0; i<${disk_count}; i++)); do
+    mountpoint="/data/oss\${i}"
+    if ! findmnt -rn -M "\${mountpoint}" >/dev/null; then
+        echo "ERROR: Expected mount point \${mountpoint} is not mounted"
+        exit 1
+    fi
+done
+EOF
 done
 
 echo "Disk format and mount completed."

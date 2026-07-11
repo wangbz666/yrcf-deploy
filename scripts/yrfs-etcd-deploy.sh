@@ -45,6 +45,34 @@ debug() {
     fi
 }
 
+is_valid_ipv4() {
+    local ip="$1"
+    local octets=()
+    local octet
+
+    [[ "${ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+    IFS='.' read -ra octets <<< "${ip}"
+    [[ ${#octets[@]} -eq 4 ]] || return 1
+
+    for octet in "${octets[@]}"; do
+        [[ ${#octet} -le 3 ]] || return 1
+        ((10#${octet} <= 255)) || return 1
+    done
+}
+
+check_remote_status() {
+    local node="$1"
+    local action="$2"
+    local stdout="$3"
+    local status="$4"
+
+    log "${node}" "${action}" "${stdout}" "" "${status}"
+    if [[ "${status}" -ne 0 ]]; then
+        echo "ERROR: ${action} failed on ${node} (status: ${status})"
+        exit 1
+    fi
+}
+
 ######################## 1. 检查配置文件 ########################
 debug "检查配置文件开始..."
 
@@ -59,11 +87,13 @@ debug "检查配置文件完成"
 debug "解析配置开始..."
 
 ETCD_NODES=()
+ETCD_IP_VALUE=""
 ROOT_PASS=""
 
 while IFS='=' read -r key value; do
     case "${key}" in
         etcd_ip)
+            ETCD_IP_VALUE="${value}"
             IFS=':' read -ra ETCD_NODES <<< "${value}"
             ;;
         root_password)
@@ -72,8 +102,29 @@ while IFS='=' read -r key value; do
     esac
 done < "${CONFIG_FILE}"
 
-[[ ${#ETCD_NODES[@]} -eq 0 ]] && { echo "ERROR: etcd_ip empty"; exit 1; }
 [[ -z "${ROOT_PASS}" ]] && { echo "ERROR: root_password empty"; exit 1; }
+[[ -z "${ETCD_IP_VALUE}" ]] && { echo "ERROR: etcd_ip empty"; exit 1; }
+[[ "${ETCD_IP_VALUE}" == :* || "${ETCD_IP_VALUE}" == *: || "${ETCD_IP_VALUE}" == *::* ]] && {
+    echo "ERROR: etcd_ip contains empty node group"
+    exit 1
+}
+
+for node in "${ETCD_NODES[@]}"; do
+    node_ips=()
+    IFS=',' read -ra node_ips <<< "${node}"
+
+    [[ -z "${node}" || "${node}" == ,* || "${node}" == *, || "${node}" == *,,* || ${#node_ips[@]} -eq 0 ]] && {
+        echo "ERROR: etcd_ip contains empty node group"
+        exit 1
+    }
+
+    for ip in "${node_ips[@]}"; do
+        if [[ -z "${ip}" ]] || ! is_valid_ipv4 "${ip}"; then
+            echo "ERROR: invalid IPv4 address '${ip}' in etcd node group '${node}'"
+            exit 1
+        fi
+    done
+done
 
 debug "解析配置完成"
 
@@ -83,16 +134,14 @@ debug "SSH 连通性检查..."
 for node in "${ETCD_NODES[@]}"; do
     primary_ip="${node%%,*}" #取配置文件中每个节点第一个ip
 
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" \
-        "echo OK" 2>&1 || true)
-    status=$?
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" \
+        "echo OK" 2>&1); then
+        status=0
+    else
+        status=$?
+    fi
 
-    log "${primary_ip}" "SSH connectivity check" "${out}" "" "${status}"
-
-    [[ "${status}" -ne 0 ]] && {
-        echo "ERROR: SSH to ${primary_ip} failed"
-        exit 1
-    }
+    check_remote_status "${primary_ip}" "SSH connectivity check" "${out}" "${status}"
 done
 
 debug "SSH 连通性检查完成"
@@ -145,17 +194,20 @@ for node in "${ETCD_NODES[@]}"; do
 
     #################### 4.1 ETCDCTL_API ####################
     debug "node:$node ETCDCTL_API"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<'CMD' 2>&1
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<'CMD' 2>&1
 set -e
 echo "export ETCDCTL_API=3" >> /root/.bash_profile
 CMD
-)
-    status=$?
-    log "${primary_ip}" "Set ETCDCTL_API=3" "${out}" "" "${status}"
+); then
+        status=0
+    else
+        status=$?
+    fi
+    check_remote_status "${primary_ip}" "Set ETCDCTL_API=3" "${out}" "${status}"
 
     #################### 4.2 systemd service ####################
     debug "node:$node systemd service"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<'CMD' 2>&1
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<'CMD' 2>&1
 set -e
 cat > /usr/lib/systemd/system/etcd.service << 'SERVICE'
 [Unit]
@@ -178,28 +230,35 @@ StartLimitBurst=0
 [Install]
 WantedBy=multi-user.target
 SERVICE
+systemctl daemon-reload
 CMD
-)
-    status=$?
-    log "${primary_ip}" "Write etcd systemd unit" "${out}" "" "${status}"
+); then
+        status=0
+    else
+        status=$?
+    fi
+    check_remote_status "${primary_ip}" "Write etcd systemd unit and daemon-reload" "${out}" "${status}"
 
     #################### 4.3 目录 & 用户 ####################
     debug "node:$node 目录 & 用户"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
 set -e
-useradd -m etcd || true
+id -u etcd >/dev/null 2>&1 || useradd -m etcd
 mkdir -p /etc/etcd/
 mkdir -p /var/lib/etcd
 mkdir -p ${data_dir}
 chown -R etcd:etcd /var/lib/etcd
 CMD
-)
-    status=$?
-    log "${primary_ip}" "Create etcd user and data dir" "${out}" "" "${status}"
+); then
+        status=0
+    else
+        status=$?
+    fi
+    check_remote_status "${primary_ip}" "Create etcd user and data dir" "${out}" "${status}"
 
     #################### 4.4 etcd.conf ####################
     debug "node:$node etcd.conf"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
 set -e
 peer_urls=""
 adv_urls=""
@@ -229,9 +288,12 @@ ETCD_MAX_WALS=10
 ETCD_UNSUPPORTED_ARCH=arm64
 CONF
 CMD
-)
-    status=$?
-    log "${primary_ip}" "Write etcd.conf" "${out}" "" "${status}"
+); then
+        status=0
+    else
+        status=$?
+    fi
+    check_remote_status "${primary_ip}" "Write etcd.conf" "${out}" "${status}"
 
 #     #################### 4.5 启动 etcd ####################
 #     out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<'CMD' 2>&1
@@ -246,15 +308,18 @@ CMD
 
     #################### 4.5 持久化etcdctl参数 ####################
     debug "node:$node Persist etcdctl alias"
-    out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<CMD 2>&1
 set -e
 cat >> ~/.bashrc << ALIAS
 alias etcdctl='etcdctl --endpoints=${ETCDCTL_ENDPOINTS}'
 ALIAS
 CMD
-)
-    status=$?
-    log "${primary_ip}" "Persist etcdctl alias" "${out}" "" "${status}"
+); then
+        status=0
+    else
+        status=$?
+    fi
+    check_remote_status "${primary_ip}" "Persist etcdctl alias" "${out}" "${status}"
 
     ######################## end #####################################
     index=$((index + 1))

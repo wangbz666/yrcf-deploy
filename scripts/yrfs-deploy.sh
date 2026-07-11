@@ -11,6 +11,7 @@ DEPLOY_MGR=false
 DEPLOY_OSS=false
 DEPLOY_MDS=false
 DEPLOY_AGENT=false
+ROOT_PASS=""
 
 ################################ 日志函数（按模块） ###############################
 log_mgr()   { _log "/var/log/yrfs-deploy-mgr.log"   "$*"; }
@@ -153,6 +154,7 @@ deploy_mgr() {
     debug "mgr_net=${mgr_net}"
 
     ################################ 2. 校验 ###############################
+    [[ -z "${ROOT_PASS}" ]] && { log_mgr "ERROR: root_password empty"; exit 1; }
     [[ -z "${ipwhitelist}" ]] && { log_mgr "ERROR: ipwhitelist empty"; exit 1; }
     [[ -z "${net}" ]] && { log_mgr "ERROR: net empty"; exit 1; }
     [[ -z "${net_plane}" ]] && { log_mgr "ERROR: net_plane empty"; exit 1; }
@@ -163,6 +165,14 @@ deploy_mgr() {
     ################################ 3. 解析节点 ###############################
     IFS=':' read -ra MGR_NODES <<< "${mgr_ip}"
     IFS=':' read -ra IPWHITELIST_NODES <<< "${ipwhitelist}"
+    IFS=':' read -ra MGR_IPWL_NODES <<< "${mgr_ipwhitelist}"
+
+    if [[ "${mgr_ip}" == :* || "${mgr_ip}" == *: || "${mgr_ip}" == *::* ]] ||
+       [[ "${mgr_ipwhitelist}" == :* || "${mgr_ipwhitelist}" == *: || "${mgr_ipwhitelist}" == *::* ]] ||
+       [[ "${#MGR_NODES[@]}" -ne "${#MGR_IPWL_NODES[@]}" ]]; then
+        log_mgr "ERROR: mgr_ip and mgr_ipwhitelist group counts must match and contain no empty groups"
+        exit 1
+    fi
 
     # 构造 -E 参数（所有 IP 逗号拼接）
     local E_IPS=""
@@ -195,7 +205,7 @@ deploy_mgr() {
 
         ################################ 远程执行 ###############################
         sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${ipwhitelist_ip}" bash <<EOF | tee -a /var/log/yrfs-deploy-mgr.log
-# set -euxo pipefail
+set -euo pipefail
 
 mkdir -p /etc/yrfs
 
@@ -233,15 +243,13 @@ EOF
         fi
 
         ################################ 取当前节点的配置 ###############################
-        IFS=':' read -ra MGR_IPWL_NODES <<< "${mgr_ipwhitelist}"
-
         local this_mgr_ipwl="${MGR_IPWL_NODES[$idx]:-}"
 
         debug "this_mgr_ipwl=$this_mgr_ipwl"
 
         ################################ 远程执行 ###############################
         sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF | tee -a /var/log/yrfs-deploy-mgr.log
-# set -euxo pipefail
+set -euo pipefail
 
 mkdir -p /etc/yrfs
 
@@ -291,6 +299,7 @@ deploy_oss() {
     local oss_ipwhitelist=""
     local oss_net=""
     local oss_rdma_ip=""
+    local mgr_ip=""
 
     while IFS='=' read -r key value; do
         value=$(echo "${value}" | xargs)
@@ -301,30 +310,71 @@ deploy_oss() {
             oss_ipwhitelist) oss_ipwhitelist="${value}" ;;
             oss_net) oss_net="${value}" ;;
             oss_rdma_ip) oss_rdma_ip="${value}" ;;
+            mgr_ip) mgr_ip="${value}" ;;
         esac
     done < "${CONFIG_FILE}"
 
-    ################################ 2. 解析节点 ###############################
+    ################################ 2. 校验并解析节点 ###############################
+    [[ -z "${ROOT_PASS}" ]] && { log_oss "ERROR: root_password empty"; exit 1; }
+    [[ -z "${oss_ip}" ]] && { log_oss "ERROR: oss_ip empty"; exit 1; }
+    [[ -z "${oss_install}" ]] && { log_oss "ERROR: oss_install empty"; exit 1; }
+    [[ -z "${oss_ipwhitelist}" ]] && { log_oss "ERROR: oss_ipwhitelist empty"; exit 1; }
+    [[ -z "${oss_net}" ]] && { log_oss "ERROR: oss_net empty"; exit 1; }
+    [[ -z "${oss_rdma_ip}" ]] && { log_oss "ERROR: oss_rdma_ip empty"; exit 1; }
+    [[ -z "${mgr_ip}" ]] && { log_oss "ERROR: mgr_ip empty"; exit 1; }
+
     IFS=':' read -ra OSS_NODES <<< "${oss_ip}"
     IFS=':' read -ra OSS_INSTALL_NODES <<< "${oss_install}"
     IFS=':' read -ra OSS_IPWL_NODES <<< "${oss_ipwhitelist}"
+    IFS=':' read -ra OSS_RDMA_NODES <<< "${oss_rdma_ip}"
 
-    if [[ -n "${oss_rdma_ip}" ]]; then
-        IFS=':' read -ra OSS_RDMA_NODES <<< "${oss_rdma_ip}"
-    else
-        OSS_RDMA_NODES=()
+    if [[ "${oss_ip}" == :* || "${oss_ip}" == *: || "${oss_ip}" == *::* ]] ||
+       [[ "${oss_install}" == :* || "${oss_install}" == *: || "${oss_install}" == *::* ]] ||
+       [[ "${oss_ipwhitelist}" == :* || "${oss_ipwhitelist}" == *: || "${oss_ipwhitelist}" == *::* ]] ||
+       [[ "${oss_rdma_ip}" == :* || "${oss_rdma_ip}" == *: || "${oss_rdma_ip}" == *::* ]] ||
+       [[ "${mgr_ip}" == :* || "${mgr_ip}" == *: || "${mgr_ip}" == *::* ]] ||
+       [[ "${#OSS_NODES[@]}" -ne "${#OSS_INSTALL_NODES[@]}" ]] ||
+       [[ "${#OSS_NODES[@]}" -ne "${#OSS_IPWL_NODES[@]}" ]] ||
+       [[ "${#OSS_NODES[@]}" -ne "${#OSS_RDMA_NODES[@]}" ]]; then
+        log_oss "ERROR: OSS node/install/whitelist/RDMA group counts must match and contain no empty groups"
+        exit 1
     fi
 
-    ################################ 3. 构造 -m ###############################
-    local ALL_OSS_IPS=""
-    for node in "${OSS_NODES[@]}"; do
-        for ip in $(echo "${node}" | tr ',' ' '); do
-            ALL_OSS_IPS+="${ip},"
+    local check_idx
+    for ((check_idx = 0; check_idx < ${#OSS_NODES[@]}; check_idx++)); do
+        local check_install="${OSS_INSTALL_NODES[$check_idx]}"
+        local check_ipwl="${OSS_IPWL_NODES[$check_idx]}"
+        IFS='|' read -ra CHECK_PROCS <<< "${check_install}"
+        IFS='|' read -ra CHECK_IPWLS <<< "${check_ipwl}"
+
+        if [[ "${check_install}" == \|* || "${check_install}" == *\| || "${check_install}" == *"||"* ]] ||
+           [[ "${check_ipwl}" == \|* || "${check_ipwl}" == *\| || "${check_ipwl}" == *"||"* ]] ||
+           [[ "${#CHECK_PROCS[@]}" -ne "${#CHECK_IPWLS[@]}" ]]; then
+            log_oss "ERROR: OSS node $((check_idx + 1)) instance and instance-whitelist counts must match and contain no empty groups"
+            exit 1
+        fi
+
+        local check_proc
+        for check_proc in "${CHECK_PROCS[@]}"; do
+            if [[ -z "${check_proc}" || "${check_proc}" == ,* || "${check_proc}" == *, || "${check_proc}" == *",,"* ]]; then
+                log_oss "ERROR: every OSS instance must contain at least one non-empty disk"
+                exit 1
+            fi
         done
     done
-    ALL_OSS_IPS="${ALL_OSS_IPS%,}"
 
-    debug "ALL_OSS_IPS=$ALL_OSS_IPS"
+    ################################ 3. 构造 -m ###############################
+    local ALL_MGR_IPS=""
+    local mgr_node
+    for mgr_node in ${mgr_ip//:/ }; do
+        [[ -z "${mgr_node}" ]] && { log_oss "ERROR: mgr_ip contains an empty group"; exit 1; }
+        for ip in $(echo "${mgr_node}" | tr ',' ' '); do
+            ALL_MGR_IPS+="${ip},"
+        done
+    done
+    ALL_MGR_IPS="${ALL_MGR_IPS%,}"
+
+    debug "ALL_MGR_IPS=$ALL_MGR_IPS"
 
     ################################ 4. 遍历节点 ###############################
     local node_idx=1
@@ -371,7 +421,7 @@ deploy_oss() {
 
             sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
 $(declare -f safe_append_conf)
-# set -euxo pipefail
+set -euo pipefail
 
 mkdir -p ${conf_dir}
 
@@ -392,7 +442,7 @@ EOF
 
             ###################################### net / ipwhitelist / yaml #####################################
             sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
-# set -euxo pipefail
+set -euo pipefail
 
 echo "${this_proc_ipwl}" | tr ',' '\n' > /etc/yrfs/ipwhitelist-${proc_name}
 cp /etc/yrfs/ipwhitelist-${proc_name} /etc/yrfs/ipwhitelist-${proc_name}-sync
@@ -416,11 +466,11 @@ EOF
                 local i_val=$(( node_idx * 100 + disk_seq ))
                 local I_val="tg${i_val}"
 
-                log_oss "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_OSS_IPS})"
-                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_OSS_IPS})"
+                log_oss "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
 
                 sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
-# set -euxo pipefail
+set -euo pipefail
 
 MOUNT_POINT=\$(df -h "${disk}" | awk 'NR==2{print \$6}')
 if [[ -z "\${MOUNT_POINT}" ]]; then
@@ -435,7 +485,7 @@ fi
   -i ${i_val} \
   -I ${I_val} \
   -c ${conf_file} \
-  -m ${ALL_OSS_IPS}
+  -m ${ALL_MGR_IPS}
 
 EOF
                 disk_seq=$((disk_seq + 1))
@@ -460,6 +510,7 @@ deploy_mds() {
     local mds_ipwhitelist=""
     local mds_net=""
     local mds_rdma_ip=""
+    local mgr_ip=""
 
     while IFS='=' read -r key value; do
         value=$(echo "${value}" | xargs)
@@ -470,29 +521,71 @@ deploy_mds() {
             mds_ipwhitelist) mds_ipwhitelist="${value}" ;;
             mds_net) mds_net="${value}" ;;
             mds_rdma_ip) mds_rdma_ip="${value}" ;;
+            mgr_ip) mgr_ip="${value}" ;;
         esac
     done < "${CONFIG_FILE}"
 
-    ################################ 2. 解析节点 ###############################
+    ################################ 2. 校验并解析节点 ###############################
+    [[ -z "${ROOT_PASS}" ]] && { log_mds "ERROR: root_password empty"; exit 1; }
+    [[ -z "${mds_ip}" ]] && { log_mds "ERROR: mds_ip empty"; exit 1; }
+    [[ -z "${mds_install}" ]] && { log_mds "ERROR: mds_install empty"; exit 1; }
+    [[ -z "${mds_ipwhitelist}" ]] && { log_mds "ERROR: mds_ipwhitelist empty"; exit 1; }
+    [[ -z "${mds_net}" ]] && { log_mds "ERROR: mds_net empty"; exit 1; }
+    [[ -z "${mds_rdma_ip}" ]] && { log_mds "ERROR: mds_rdma_ip empty"; exit 1; }
+    [[ -z "${mgr_ip}" ]] && { log_mds "ERROR: mgr_ip empty"; exit 1; }
+
     IFS=':' read -ra MDS_NODES <<< "${mds_ip}"
     IFS=':' read -ra MDS_INSTALL_NODES <<< "${mds_install}"
     IFS=':' read -ra MDS_IPWL_NODES <<< "${mds_ipwhitelist}"
-    if [[ -n "${mds_rdma_ip}" ]]; then
-        IFS=':' read -ra MDS_RDMA_NODES <<< "${mds_rdma_ip}"
-    else
-        MDS_RDMA_NODES=()  # 设为空数组，避免后续取索引时报错
+    IFS=':' read -ra MDS_RDMA_NODES <<< "${mds_rdma_ip}"
+
+    if [[ "${mds_ip}" == :* || "${mds_ip}" == *: || "${mds_ip}" == *::* ]] ||
+       [[ "${mds_install}" == :* || "${mds_install}" == *: || "${mds_install}" == *::* ]] ||
+       [[ "${mds_ipwhitelist}" == :* || "${mds_ipwhitelist}" == *: || "${mds_ipwhitelist}" == *::* ]] ||
+       [[ "${mds_rdma_ip}" == :* || "${mds_rdma_ip}" == *: || "${mds_rdma_ip}" == *::* ]] ||
+       [[ "${mgr_ip}" == :* || "${mgr_ip}" == *: || "${mgr_ip}" == *::* ]] ||
+       [[ "${#MDS_NODES[@]}" -ne "${#MDS_INSTALL_NODES[@]}" ]] ||
+       [[ "${#MDS_NODES[@]}" -ne "${#MDS_IPWL_NODES[@]}" ]] ||
+       [[ "${#MDS_NODES[@]}" -ne "${#MDS_RDMA_NODES[@]}" ]]; then
+        log_mds "ERROR: MDS node/install/whitelist/RDMA group counts must match and contain no empty groups"
+        exit 1
     fi
 
-    ################################ 3. 构造 -m ###############################
-    local ALL_MDS_IPS=""
-    for node in "${MDS_NODES[@]}"; do
-        for ip in $(echo "${node}" | tr ',' ' '); do
-            ALL_MDS_IPS+="${ip},"
+    local check_idx
+    for ((check_idx = 0; check_idx < ${#MDS_NODES[@]}; check_idx++)); do
+        local check_install="${MDS_INSTALL_NODES[$check_idx]}"
+        local check_ipwl="${MDS_IPWL_NODES[$check_idx]}"
+        IFS='|' read -ra CHECK_PROCS <<< "${check_install}"
+        IFS='|' read -ra CHECK_IPWLS <<< "${check_ipwl}"
+
+        if [[ "${check_install}" == \|* || "${check_install}" == *\| || "${check_install}" == *"||"* ]] ||
+           [[ "${check_ipwl}" == \|* || "${check_ipwl}" == *\| || "${check_ipwl}" == *"||"* ]] ||
+           [[ "${#CHECK_PROCS[@]}" -ne "${#CHECK_IPWLS[@]}" ]]; then
+            log_mds "ERROR: MDS node $((check_idx + 1)) instance and instance-whitelist counts must match and contain no empty groups"
+            exit 1
+        fi
+
+        local check_proc
+        for check_proc in "${CHECK_PROCS[@]}"; do
+            if [[ -z "${check_proc}" || "${check_proc}" == ,* || "${check_proc}" == *, || "${check_proc}" == *",,"* ]]; then
+                log_mds "ERROR: every MDS instance must contain at least one non-empty disk"
+                exit 1
+            fi
         done
     done
-    ALL_MDS_IPS="${ALL_MDS_IPS%,}"
 
-    debug "ALL_MDS_IPS=$ALL_MDS_IPS"
+    ################################ 3. 构造 -m ###############################
+    local ALL_MGR_IPS=""
+    local mgr_node
+    for mgr_node in ${mgr_ip//:/ }; do
+        [[ -z "${mgr_node}" ]] && { log_mds "ERROR: mgr_ip contains an empty group"; exit 1; }
+        for ip in $(echo "${mgr_node}" | tr ',' ' '); do
+            ALL_MGR_IPS+="${ip},"
+        done
+    done
+    ALL_MGR_IPS="${ALL_MGR_IPS%,}"
+
+    debug "ALL_MGR_IPS=$ALL_MGR_IPS"
 
     ################################ 4. 遍历节点 ###############################
     local node_idx=1
@@ -539,7 +632,7 @@ deploy_mds() {
             sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
 $(declare -f safe_append_conf)
 
-# set -euxo pipefail
+set -euo pipefail
 
 mkdir -p ${conf_dir}
 
@@ -561,7 +654,7 @@ EOF
 
             ###################################### net / ipwhitelist / yaml（进程级）#####################################
             sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
-# set -euxo pipefail
+set -euo pipefail
 
 echo "${this_proc_ipwl}" | tr ',' '\n' > /etc/yrfs/ipwhitelist-${proc_name}
 cp /etc/yrfs/ipwhitelist-${proc_name} /etc/yrfs/ipwhitelist-${proc_name}-sync
@@ -583,11 +676,11 @@ EOF
             ################################ 6. 每个磁盘执行 install ###############################
             IFS=',' read -ra DISKS <<< "${proc}"
             for disk in "${DISKS[@]}"; do
-                log_mds "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MDS_IPS})"
-                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MDS_IPS})"
+                log_mds "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
 
                 sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
-# set -euxo pipefail
+set -euo pipefail
 
 MOUNT_POINT=\$(df -h "${disk}" | awk 'NR==2{print \$6}')
 if [[ -z "\${MOUNT_POINT}" ]]; then
@@ -600,7 +693,7 @@ fi
   -S ${node_name} \
   -s ${s_val} \
   -c ${conf_file} \
-  -m ${ALL_MDS_IPS}
+  -m ${ALL_MGR_IPS}
 
 EOF
             done
@@ -622,6 +715,7 @@ deploy_agent() {
     local agent_ip=""
     local agent_ipwhitelist=""
     local agent_net=""
+    local mgr_ip=""
 
     while IFS='=' read -r key value; do
         value=$(echo "${value}" | xargs)
@@ -630,24 +724,43 @@ deploy_agent() {
             agent_ip) agent_ip="${value}" ;;
             agent_ipwhitelist) agent_ipwhitelist="${value}" ;;
             agent_net) agent_net="${value}" ;;
+            mgr_ip) mgr_ip="${value}" ;;
         esac
     done < "${CONFIG_FILE}"
 
-    ################################ 2. 解析节点 ###############################
+    ################################ 2. 校验并解析节点 ###############################
+    [[ -z "${ROOT_PASS}" ]] && { log_agent "ERROR: root_password empty"; exit 1; }
+    [[ -z "${agent_ip}" ]] && { log_agent "ERROR: agent_ip empty"; exit 1; }
+    [[ -z "${agent_ipwhitelist}" ]] && { log_agent "ERROR: agent_ipwhitelist empty"; exit 1; }
+    [[ -z "${agent_net}" ]] && { log_agent "ERROR: agent_net empty"; exit 1; }
+    [[ -z "${mgr_ip}" ]] && { log_agent "ERROR: mgr_ip empty"; exit 1; }
+
     IFS=':' read -ra AGENT_NODES <<< "${agent_ip}"
     IFS=':' read -ra AGENT_IPWL_NODES <<< "${agent_ipwhitelist}"
     IFS=':' read -ra AGENT_NET_NODES <<< "${agent_net}"
 
-    ################################ 3. 构造 -m（所有 agent IP）###############################
-    local ALL_AGENT_IPS=""
-    for node in "${AGENT_NODES[@]}"; do
-        for ip in $(echo "${node}" | tr ',' ' '); do
-            ALL_AGENT_IPS+="${ip},"
+    if [[ "${agent_ip}" == :* || "${agent_ip}" == *: || "${agent_ip}" == *::* ]] ||
+       [[ "${agent_ipwhitelist}" == :* || "${agent_ipwhitelist}" == *: || "${agent_ipwhitelist}" == *::* ]] ||
+       [[ "${agent_net}" == :* || "${agent_net}" == *: || "${agent_net}" == *::* ]] ||
+       [[ "${mgr_ip}" == :* || "${mgr_ip}" == *: || "${mgr_ip}" == *::* ]] ||
+       [[ "${#AGENT_NODES[@]}" -ne "${#AGENT_IPWL_NODES[@]}" ]] ||
+       [[ "${#AGENT_NODES[@]}" -ne "${#AGENT_NET_NODES[@]}" ]]; then
+        log_agent "ERROR: agent_ip, agent_ipwhitelist and agent_net group counts must match and contain no empty groups"
+        exit 1
+    fi
+
+    ################################ 3. 构造 -m（所有 MGR IP）###############################
+    local ALL_MGR_IPS=""
+    local mgr_node
+    for mgr_node in ${mgr_ip//:/ }; do
+        [[ -z "${mgr_node}" ]] && { log_agent "ERROR: mgr_ip contains an empty group"; exit 1; }
+        for ip in $(echo "${mgr_node}" | tr ',' ' '); do
+            ALL_MGR_IPS+="${ip},"
         done
     done
-    ALL_AGENT_IPS="${ALL_AGENT_IPS%,}"
+    ALL_MGR_IPS="${ALL_MGR_IPS%,}"
 
-    debug "ALL_AGENT_IPS=$ALL_AGENT_IPS"
+    debug "ALL_MGR_IPS=$ALL_MGR_IPS"
 
     ################################ 4. 遍历节点 ###############################
     local node_idx=1
@@ -670,7 +783,7 @@ deploy_agent() {
 
         ################################ 5. 远程执行 ###############################
         sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF | tee -a /var/log/yrfs-deploy-agent.log
-# set -euxo pipefail
+set -euo pipefail
 
 mkdir -p /etc/yrfs
 
@@ -691,7 +804,7 @@ grep -q "conn_subnet_filter_file" /etc/yrfs/yrfs-agent.conf || \
 
 ###################################### 安装 agent #####################################
 /usr/local/sbin/install-yrfs-agent \
-  -m ${ALL_AGENT_IPS} \
+  -m ${ALL_MGR_IPS} \
   -S ${primary_ip}
 
 EOF
