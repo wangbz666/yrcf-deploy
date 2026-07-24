@@ -1,0 +1,99 @@
+# YRCF 节点环境准备配置示例
+# 配置文件不保存任何密码。首次连接节点时，脚本会交互式要求输入 root 密码。
+#
+# 配置规则：
+# 1. 至少配置一个节点节，例如 [node1]。
+# 2. [global] 及其中的配置项均为可选项，整节可以省略。
+# 3. 标有“必填”的节点配置缺失时，脚本会在修改系统前停止。
+
+[global]
+# 可选。预期CPU架构；不配置或留空时不检查架构。
+expected_arch=aarch64
+
+# 可选。预期操作系统ID；默认值：ubuntu。
+expected_os_id=ubuntu
+
+# 可选。最低内存，单位GiB；默认值：0，表示不检查最低内存。
+min_memory_gb=0
+
+# 可选。是否关闭UFW；默认值：true。
+disable_ufw=true
+
+# 可选。是否关闭AppArmor；默认值：true。
+disable_apparmor=true
+
+# 可选。Netplan渲染器；默认值：networkd。
+netplan_renderer=networkd
+
+# 可选。脚本生成的Netplan文件；默认值如下。
+netplan_file=/etc/netplan/60-yrcf-route.yaml
+
+# 可选。控制节点SSH私钥；默认值如下，不存在时自动生成。
+controller_key=/root/.ssh/id_rsa
+
+# 可选。SSH连接超时时间，单位秒；默认值：10。
+ssh_connect_timeout=10
+
+# 可选。目标节点执行日志；默认值如下。
+log_file=/var/log/yrcf-node-prepare.log
+
+# 节点配置说明：
+# - 节名称就是最终主机名，例如 [node1] 最终会设置 hostname=node1。
+# - connect_ip：必填。控制节点首次SSH连接使用的现有IP。
+# - hosts_ip：可选。写入/etc/hosts并用于节点间互信；默认使用connect_ip。
+# - interfaces：必填。需要配置的网卡，多个名称使用英文逗号分隔。
+#   网卡名称不固定，可以是ib0、ib1、ib2、ib3、ibs1、ibs2等，
+#   但名称必须与目标节点上实际存在的网卡完全一致。
+# - interfaces中每张网卡都必须配置以下三个动态配置项：
+#   <网卡名>_address：必填，网卡IP和掩码。
+#   <网卡名>_network：必填，网卡对应的直连网段。
+#   <网卡名>_table：必填，策略路由表号；同一节点建议各网卡使用不同表号。
+# - expected_disks：可选。预期存在且未挂载的磁盘，多个设备用英文逗号分隔。
+#   不配置时不校验具体磁盘，只输出当前磁盘列表并产生一条警告。
+#   该项只执行检查，不会格式化、挂载或清理磁盘。
+
+[node1]
+# 必填
+connect_ip=192.168.255.95
+
+# 可选；不配置时使用connect_ip
+hosts_ip=192.168.255.95
+
+# 必填；可按实际情况增加ib2、ib3、ibs1、ibs2或其他网卡
+interfaces=ib0,ib1
+
+# 必填；因为interfaces中配置了ib0
+ib0_address=100.18.60.95/24
+ib0_network=100.18.60.0/24
+ib0_table=20
+
+# 必填；因为interfaces中配置了ib1
+ib1_address=100.18.60.195/24
+ib1_network=100.18.60.0/24
+ib1_table=30
+
+# 可选
+expected_disks=/dev/nvme0n1,/dev/nvme1n1,/dev/nvme2n1,/dev/nvme3n1,/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1,/dev/nvme7n1,/dev/nvme8n1,/dev/nvme9n1,/dev/nvme10n1,/dev/nvme11n1,/dev/nvme13n1
+
+[node2]
+# 必填
+connect_ip=192.168.255.96
+
+# 可选；不配置时使用connect_ip
+hosts_ip=192.168.255.96
+
+# 必填
+interfaces=ib0,ib1
+
+# 以下三项必填；因为interfaces中配置了ib0
+ib0_address=100.18.60.96/24
+ib0_network=100.18.60.0/24
+ib0_table=20
+
+# 以下三项必填；因为interfaces中配置了ib1
+ib1_address=100.18.60.196/24
+ib1_network=100.18.60.0/24
+ib1_table=30
+
+# 可选
+expected_disks=/dev/nvme0n1,/dev/nvme1n1,/dev/nvme2n1,/dev/nvme3n1,/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1,/dev/nvme7n1,/dev/nvme8n1,/dev/nvme9n1,/dev/nvme10n1,/dev/nvme11n1,/dev/nvme13n1

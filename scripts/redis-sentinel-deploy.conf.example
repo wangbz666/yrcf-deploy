@@ -1,0 +1,40 @@
+# Redis Sentinel 自动化部署配置示例
+# 分隔规则：
+# : 分隔节点
+# 注释必须单独占一行，不要追加在配置值末尾
+
+# 所有节点的 root SSH 密码。
+root_password=Passw0rd
+
+# Redis 连接密码；requirepass、masterauth、sentinel auth-pass 使用同一值。
+redis_password=Passw0rd
+
+# 4 个 Redis 节点，依次为 node1~node4；首个 IP 为初始 Master（node1）。
+redis_ip=192.168.255.95:192.168.255.96:192.168.255.97:192.168.255.98
+
+# 3 个 Sentinel 节点，部署在 node1~node3；首个 IP 用于 SSH 连通性检查代表项。
+sentinel_ip=192.168.255.95:192.168.255.96:192.168.255.97
+
+# Sentinel 监控的主节点名称。
+master_name=mymaster
+
+# 初始 Master 地址；默认取 redis_ip 中第一个 IP，也可显式指定。
+master_ip=192.168.255.95
+master_port=6379
+
+# Sentinel 法定票数；3 个 Sentinel 时建议为 2。
+sentinel_quorum=2
+
+# Redis 监听端口。
+redis_port=6379
+
+# Sentinel 监听端口。
+sentinel_port=26379
+
+# 每节点最大内存。
+maxmemory=4gb
+
+# Sentinel 参数。
+down_after_milliseconds=30000
+failover_timeout=180000
+parallel_syncs=1
