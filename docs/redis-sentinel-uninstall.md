@@ -42,14 +42,14 @@ systemctl stop redis-sentinel 2>/dev/null || true
 systemctl disable redis-sentinel 2>/dev/null || true
 
 # 2.2 停止 Redis（所有节点）
-systemctl stop redis 2>/dev/null || true
-systemctl disable redis 2>/dev/null || true
+systemctl stop redis-server 2>/dev/null || true
+systemctl disable redis-server 2>/dev/null || true
 
 # 2.3 检查服务状态（node1、node2、node3）
-systemctl is-active redis redis-sentinel 2>/dev/null || true
+systemctl is-active redis-server redis-sentinel 2>/dev/null || true
 
 # 2.3 检查服务状态（所有节点）
-systemctl is-active redis 2>/dev/null || true
+systemctl is-active redis-server 2>/dev/null || true
 
 # 预期：均返回 inactive 或提示服务不存在
 ```
@@ -150,12 +150,12 @@ rm -f /var/log/redis-sentinel-deploy.log
 
 ```bash
 # 在 node1、node2、node3 执行
-systemctl status redis 2>/dev/null || true
+systemctl status redis-server 2>/dev/null || true
 systemctl status redis-sentinel 2>/dev/null || true
 ss -lntp | grep -E ':6379|:26379' || true
 
 # 在所有节点执行
-systemctl status redis 2>/dev/null || true
+systemctl status redis-server 2>/dev/null || true
 ss -lntp | grep ':6379' || true
 test ! -d /var/lib/redis/node1-6379
 test ! -f /etc/redis/redis.conf

@@ -281,7 +281,7 @@ run_check() {
         out=$(remote_exec "${ip}" "Check sentinel residual on ${ip}" "$(cat <<CMD
 set -euo pipefail
 echo "=== node ${ip} (sentinel) ==="
-redis_state=\$(systemctl is-active redis 2>/dev/null || true)
+redis_state=\$(systemctl is-active redis-server 2>/dev/null || true)
 sentinel_state=\$(systemctl is-active redis-sentinel 2>/dev/null || true)
 echo "redis_state=\${redis_state}"
 echo "sentinel_state=\${sentinel_state}"
@@ -315,7 +315,7 @@ CMD
         out=$(remote_exec "${ip}" "Check redis residual on ${ip}" "$(cat <<CMD
 set -euo pipefail
 echo "=== node ${ip} (redis index ${index}) ==="
-redis_state=\$(systemctl is-active redis 2>/dev/null || true)
+redis_state=\$(systemctl is-active redis-server 2>/dev/null || true)
 echo "redis_state=\${redis_state}"
 ss -lntp 2>/dev/null | grep -E ':${REDIS_PORT}\\b' || true
 test ! -f /etc/redis/redis.conf && echo "redis.conf=absent" || echo "redis.conf=present"
@@ -405,9 +405,9 @@ debug "停止 Redis 开始..."
 for ip in "${REDIS_NODES[@]}"; do
     remote_exec "${ip}" "Stop and disable redis" "$(cat <<'CMD'
 set -euo pipefail
-systemctl stop redis 2>/dev/null || true
-systemctl disable redis 2>/dev/null || true
-systemctl is-active redis 2>/dev/null || true
+systemctl stop redis-server 2>/dev/null || true
+systemctl disable redis-server 2>/dev/null || true
+systemctl is-active redis-server 2>/dev/null || true
 CMD
 )" >/dev/null
 done

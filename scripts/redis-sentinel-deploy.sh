@@ -385,9 +385,9 @@ for ip in "${REDIS_NODES[@]}"; do
 
     remote_exec "${ip}" "Start redis (slave first) on node${index}" "$(cat <<CMD
 set -euo pipefail
-systemctl restart redis
-systemctl enable redis
-systemctl is-active redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl is-active redis-server
 CMD
 )"
     index=$((index + 1))
@@ -395,9 +395,9 @@ done
 
 remote_exec "${MASTER_IP}" "Start redis (master)" "$(cat <<CMD
 set -euo pipefail
-systemctl restart redis
-systemctl enable redis
-systemctl is-active redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl is-active redis-server
 CMD
 )"
 
