@@ -198,6 +198,9 @@ REDIS_IP_VALUE=""
 SENTINEL_IP_VALUE=""
 REDIS_PORT="6379"
 SENTINEL_PORT="26379"
+REDIS_DIR_TEMPLATE="/var/lib/redis/node{index}-{port}"
+REDIS_LOGFILE="/var/log/redis/redis.log"
+SENTINEL_LOGFILE="/var/log/redis/sentinel.log"
 
 while IFS='=' read -r key value; do
     [[ -z "${key}" || "${key}" =~ ^[[:space:]]*# ]] && continue
@@ -211,8 +214,21 @@ while IFS='=' read -r key value; do
         sentinel_ip) SENTINEL_IP_VALUE="${value}" ;;
         redis_port) REDIS_PORT="${value}" ;;
         sentinel_port) SENTINEL_PORT="${value}" ;;
+        redis_dir_template) REDIS_DIR_TEMPLATE="${value}" ;;
+        redis_logfile) REDIS_LOGFILE="${value}" ;;
+        sentinel_logfile) SENTINEL_LOGFILE="${value}" ;;
     esac
 done < "${CONFIG_FILE}"
+
+render_path_template() {
+    local template="$1"
+    local index="$2"
+    local port="$3"
+    local out="${template}"
+    out="${out//\{index\}/${index}}"
+    out="${out//\{port\}/${port}}"
+    printf '%s' "${out}"
+}
 
 REDIS_NODES=()
 SENTINEL_NODES=()
@@ -312,6 +328,7 @@ CMD
 
     index=1
     for ip in "${REDIS_NODES[@]}"; do
+        data_dir="$(render_path_template "${REDIS_DIR_TEMPLATE}" "${index}" "${REDIS_PORT}")"
         out=$(remote_exec "${ip}" "Check redis residual on ${ip}" "$(cat <<CMD
 set -euo pipefail
 echo "=== node ${ip} (redis index ${index}) ==="
@@ -319,7 +336,7 @@ redis_state=\$(systemctl is-active redis-server 2>/dev/null || true)
 echo "redis_state=\${redis_state}"
 ss -lntp 2>/dev/null | grep -E ':${REDIS_PORT}\\b' || true
 test ! -f /etc/redis/redis.conf && echo "redis.conf=absent" || echo "redis.conf=present"
-data_dir="/var/lib/redis/node${index}-${REDIS_PORT}"
+data_dir="${data_dir}"
 if [[ -d "\${data_dir}" ]]; then
   leftover=\$(find "\${data_dir}" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)
   echo "data_dir_state=present"
@@ -419,9 +436,10 @@ debug "清理 Redis 数据开始..."
 
 index=1
 for ip in "${REDIS_NODES[@]}"; do
+    data_dir="$(render_path_template "${REDIS_DIR_TEMPLATE}" "${index}" "${REDIS_PORT}")"
     remote_exec "${ip}" "Clear redis data on node${index}" "$(cat <<CMD
 set -euo pipefail
-data_dir="/var/lib/redis/node${index}-${REDIS_PORT}"
+data_dir="${data_dir}"
 if [[ -d "\${data_dir}" ]]; then
   find "\${data_dir}" -mindepth 1 -delete
 fi
@@ -489,11 +507,12 @@ CMD
 
     index=1
     for ip in "${REDIS_NODES[@]}"; do
+        data_dir="$(render_path_template "${REDIS_DIR_TEMPLATE}" "${index}" "${REDIS_PORT}")"
         remote_exec "${ip}" "Remove logs and data dirs on node${index}" "$(cat <<CMD
 set -euo pipefail
-rm -f /var/log/redis/redis.log
-rm -f /var/log/redis/sentinel.log
-rm -rf /var/lib/redis/node${index}-${REDIS_PORT}
+rm -f ${REDIS_LOGFILE}
+rm -f ${SENTINEL_LOGFILE}
+rm -rf ${data_dir}
 for dir in /var/lib/redis/node*-${REDIS_PORT}; do
   [[ -e "\${dir}" ]] || continue
   rm -rf "\${dir}"

@@ -2,11 +2,18 @@
 # 分隔规则：
 # : 分隔节点
 # 注释必须单独占一行，不要追加在配置值末尾
+#
+# 说明：
+# - 下面「常用配置」保持现有默认项；未额外写出的 Redis/Sentinel 参数使用脚本内置默认值
+# - 需要覆盖时，取消「可选覆盖」中对应项的注释并修改即可
+
+######################## 常用配置 ########################
 
 # 所有节点的 root SSH 密码。
 root_password=Passw0rd
 
-# Redis 连接密码；requirepass、masterauth、sentinel auth-pass 使用同一值。
+# Redis 连接密码；可选。有值时写入 requirepass / masterauth / sentinel auth-pass；
+# 留空或不配则为无密码模式。
 redis_password=Passw0rd
 
 # 4 个 Redis 节点，依次为 node1~node4；首个 IP 为初始 Master（node1）。
@@ -38,3 +45,29 @@ maxmemory=4gb
 down_after_milliseconds=30000
 failover_timeout=180000
 parallel_syncs=1
+
+######################## 可选覆盖（默认与脚本内置一致，可不写） ########################
+
+# ---- Redis ----
+# redis_bind=0.0.0.0
+# daemonize=yes
+# protected_mode=no
+# redis_logfile=/var/log/redis/redis.log
+# redis_dir_template=/var/lib/redis/node{index}-{port}
+# maxmemory_policy=allkeys-lru
+# appendonly=yes
+# appendfilename_template=node{index}-{port}-appendonly.aof
+# auto_aof_rewrite_percentage=100
+# auto_aof_rewrite_min_size=64mb
+# save=900 1
+# replica_read_only=yes
+# min_replicas_to_write=1
+# min_replicas_max_lag=10
+
+# ---- Sentinel ----
+# sentinel_bind=0.0.0.0
+# sentinel_protected_mode=no
+# sentinel_pidfile=/var/run/redis-sentinel.pid
+# sentinel_logfile=/var/log/redis/sentinel.log
+# sentinel_dir=/tmp
+# deny_scripts_reconfig=yes

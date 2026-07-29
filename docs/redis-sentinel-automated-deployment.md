@@ -42,7 +42,8 @@ vim /etc/redis/redis-sentinel-deploy.conf
 # 所有节点的 root SSH 密码
 root_password=Passw0rd
 
-# Redis 连接密码；requirepass、masterauth、sentinel auth-pass 使用同一值
+# Redis 连接密码；可选。有值时写入 requirepass / masterauth / sentinel auth-pass；
+# 留空或不配则为无密码模式
 redis_password=Passw0rd
 
 # 4 个 Redis 节点，依次为 node1~node4；首个 IP 为初始 Master（node1）
@@ -68,7 +69,41 @@ parallel_syncs=1
 - `:` 分隔节点
 - `redis_ip` 中第一个 IP 为初始 Master（node1）
 - `sentinel_ip` 中的 IP 必须都出现在 `redis_ip` 中
-- `redis_password` 同时用于 `requirepass`、`masterauth`、`sentinel auth-pass`
+- `redis_password` 可选：有值时同时用于 `requirepass`、`masterauth`、`sentinel auth-pass`；留空或不配则部署为无密码 Redis/Sentinel
+- 上表为常用配置项；其余 Redis/Sentinel 参数可不写，脚本使用内置默认值；需要时再在配置文件中显式给出并覆盖
+
+### 可选覆盖项（不写则用默认）
+
+| 配置项 | 默认值 | 对应配置 |
+|---|---|---|
+| `redis_bind` | `0.0.0.0` | Redis `bind` |
+| `daemonize` | `yes` | Redis `daemonize` |
+| `protected_mode` | `no` | Redis `protected-mode` |
+| `redis_logfile` | `/var/log/redis/redis.log` | Redis `logfile` |
+| `redis_dir_template` | `/var/lib/redis/node{index}-{port}` | Redis `dir`（`{index}`/`{port}` 自动替换） |
+| `maxmemory_policy` | `allkeys-lru` | Redis `maxmemory-policy` |
+| `appendonly` | `yes` | Redis `appendonly` |
+| `appendfilename_template` | `node{index}-{port}-appendonly.aof` | Redis `appendfilename` |
+| `auto_aof_rewrite_percentage` | `100` | Redis `auto-aof-rewrite-percentage` |
+| `auto_aof_rewrite_min_size` | `64mb` | Redis `auto-aof-rewrite-min-size` |
+| `save` | `900 1` | Redis `save` |
+| `replica_read_only` | `yes` | Redis `replica-read-only` |
+| `min_replicas_to_write` | `1` | Redis `min-replicas-to-write` |
+| `min_replicas_max_lag` | `10` | Redis `min-replicas-max-lag` |
+| `sentinel_bind` | `0.0.0.0` | Sentinel `bind` |
+| `sentinel_protected_mode` | `no` | Sentinel `protected-mode` |
+| `sentinel_pidfile` | `/var/run/redis-sentinel.pid` | Sentinel `pidfile` |
+| `sentinel_logfile` | `/var/log/redis/sentinel.log` | Sentinel `logfile` |
+| `sentinel_dir` | `/tmp` | Sentinel `dir` |
+| `deny_scripts_reconfig` | `yes` | Sentinel `deny-scripts-reconfig` |
+
+示例（仅覆盖需要改的项）：
+
+```ini
+maxmemory_policy=volatile-lru
+save=300 10
+min_replicas_to_write=2
+```
 
 ## 3. 部署前准备
 
@@ -126,8 +161,9 @@ chmod +x redis-sentinel-deploy.sh
 ### 5.1 检查主从复制
 
 ```bash
-# 在 node1 执行
+# 在 node1 执行（有密码时加 -a；无密码模式去掉 -a）
 redis-cli -a REPLACE_REDIS_PASSWORD INFO replication
+# 或：redis-cli INFO replication
 
 # 预期
 # role:master
@@ -172,7 +208,7 @@ tail -n 50 /var/log/redis-sentinel-deploy.log
 ## 7. 注意事项
 
 1. **先装包再跑脚本**：脚本不安装软件包；未安装时会检查失败并退出。
-2. **密码一致**：`redis_password` 会写入 Redis 和 Sentinel 配置，必须保持一致。
+2. **密码**：`redis_password` 有值时会写入 Redis 和 Sentinel，且必须一致；留空则为无密码模式（仅建议测试环境）。
 3. **初始 Master 固定 node1**：`master_ip` 默认 `192.168.255.95`；故障转移后的拓扑不会自动回切。
 4. **客户端接入**：应用应连接 Sentinel（node1~node3 的 `26379`），不要写死 Master IP。
 5. **重复执行**：脚本会覆盖 `/etc/redis/redis.conf` 和 `/etc/redis/sentinel.conf` 并重启服务；已有业务数据时需先备份。
