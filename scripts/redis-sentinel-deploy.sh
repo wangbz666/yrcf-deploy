@@ -139,6 +139,31 @@ DOWN_AFTER_MS="30000"
 FAILOVER_TIMEOUT="180000"
 PARALLEL_SYNCS="1"
 
+# Redis 参数默认值（配置文件未给出时生效；与当前生成模板一致）
+REDIS_BIND="0.0.0.0"
+DAEMONIZE="yes"
+PROTECTED_MODE="no"
+REDIS_LOGFILE="/var/log/redis/redis.log"
+# {index} / {port} 会在下发时替换为节点序号与 redis_port
+REDIS_DIR_TEMPLATE="/var/lib/redis/node{index}-{port}"
+MAXMEMORY_POLICY="allkeys-lru"
+APPENDONLY="yes"
+APPENDFILENAME_TEMPLATE="node{index}-{port}-appendonly.aof"
+AUTO_AOF_REWRITE_PERCENTAGE="100"
+AUTO_AOF_REWRITE_MIN_SIZE="64mb"
+SAVE="900 1"
+REPLICA_READ_ONLY="yes"
+MIN_REPLICAS_TO_WRITE="1"
+MIN_REPLICAS_MAX_LAG="10"
+
+# Sentinel 参数默认值
+SENTINEL_BIND="0.0.0.0"
+SENTINEL_PROTECTED_MODE="no"
+SENTINEL_PIDFILE="/var/run/redis-sentinel.pid"
+SENTINEL_LOGFILE="/var/log/redis/sentinel.log"
+SENTINEL_DIR="/tmp"
+DENY_SCRIPTS_RECONFIG="yes"
+
 while IFS='=' read -r key value; do
     [[ -z "${key}" || "${key}" =~ ^[[:space:]]*# ]] && continue
     key="$(echo "${key}" | tr -d '[:space:]')"
@@ -160,6 +185,26 @@ while IFS='=' read -r key value; do
         down_after_milliseconds) DOWN_AFTER_MS="${value}" ;;
         failover_timeout) FAILOVER_TIMEOUT="${value}" ;;
         parallel_syncs) PARALLEL_SYNCS="${value}" ;;
+        redis_bind) REDIS_BIND="${value}" ;;
+        daemonize) DAEMONIZE="${value}" ;;
+        protected_mode) PROTECTED_MODE="${value}" ;;
+        redis_logfile) REDIS_LOGFILE="${value}" ;;
+        redis_dir_template) REDIS_DIR_TEMPLATE="${value}" ;;
+        maxmemory_policy) MAXMEMORY_POLICY="${value}" ;;
+        appendonly) APPENDONLY="${value}" ;;
+        appendfilename_template) APPENDFILENAME_TEMPLATE="${value}" ;;
+        auto_aof_rewrite_percentage) AUTO_AOF_REWRITE_PERCENTAGE="${value}" ;;
+        auto_aof_rewrite_min_size) AUTO_AOF_REWRITE_MIN_SIZE="${value}" ;;
+        save) SAVE="${value}" ;;
+        replica_read_only) REPLICA_READ_ONLY="${value}" ;;
+        min_replicas_to_write) MIN_REPLICAS_TO_WRITE="${value}" ;;
+        min_replicas_max_lag) MIN_REPLICAS_MAX_LAG="${value}" ;;
+        sentinel_bind) SENTINEL_BIND="${value}" ;;
+        sentinel_protected_mode) SENTINEL_PROTECTED_MODE="${value}" ;;
+        sentinel_pidfile) SENTINEL_PIDFILE="${value}" ;;
+        sentinel_logfile) SENTINEL_LOGFILE="${value}" ;;
+        sentinel_dir) SENTINEL_DIR="${value}" ;;
+        deny_scripts_reconfig) DENY_SCRIPTS_RECONFIG="${value}" ;;
     esac
 done < "${CONFIG_FILE}"
 
@@ -175,9 +220,20 @@ if [[ -n "${SENTINEL_IP_VALUE}" ]]; then
 fi
 
 [[ -z "${ROOT_PASS}" ]] && { echo "ERROR: root_password empty"; exit 1; }
-[[ -z "${REDIS_PASS}" ]] && { echo "ERROR: redis_password empty"; exit 1; }
 [[ ${#REDIS_NODES[@]} -eq 0 ]] && { echo "ERROR: redis_ip empty"; exit 1; }
 [[ ${#SENTINEL_NODES[@]} -eq 0 ]] && { echo "ERROR: sentinel_ip empty"; exit 1; }
+
+# redis_password 为空：无密码模式（不写 requirepass / masterauth / sentinel auth-pass）
+AUTH_REDIS_LINES=""
+AUTH_SENTINEL_LINE=""
+if [[ -n "${REDIS_PASS}" ]]; then
+    AUTH_REDIS_LINES="requirepass ${REDIS_PASS}
+masterauth ${REDIS_PASS}"
+    AUTH_SENTINEL_LINE="sentinel auth-pass ${MASTER_NAME} ${REDIS_PASS}"
+    debug "Redis auth: enabled"
+else
+    debug "Redis auth: disabled (redis_password empty)"
+fi
 
 if [[ -z "${MASTER_IP}" ]]; then
     MASTER_IP="${REDIS_NODES[0]}"
@@ -200,7 +256,19 @@ ip_in_list "${MASTER_IP}" "${REDIS_NODES[@]}" || {
     exit 1
 }
 
+render_path_template() {
+    local template="$1"
+    local index="$2"
+    local port="$3"
+    local out="${template}"
+    out="${out//\{index\}/${index}}"
+    out="${out//\{port\}/${port}}"
+    printf '%s' "${out}"
+}
+
 debug "解析配置完成"
+debug "redis: bind=${REDIS_BIND} port=${REDIS_PORT} maxmemory=${MAXMEMORY} policy=${MAXMEMORY_POLICY} appendonly=${APPENDONLY} save=${SAVE}"
+debug "sentinel: bind=${SENTINEL_BIND} port=${SENTINEL_PORT} quorum=${SENTINEL_QUORUM} down_after=${DOWN_AFTER_MS} failover=${FAILOVER_TIMEOUT}"
 
 ######################## 3. SSH 连通性检查 ########################
 debug "SSH 连通性检查开始..."
@@ -249,12 +317,13 @@ debug "创建目录开始..."
 
 index=1
 for ip in "${REDIS_NODES[@]}"; do
+    redis_dir="$(render_path_template "${REDIS_DIR_TEMPLATE}" "${index}" "${REDIS_PORT}")"
     remote_exec "${ip}" "Create redis directories for node${index}" "$(cat <<CMD
 set -euo pipefail
 mkdir -p /var/log/redis
-mkdir -p /var/lib/redis/node${index}-${REDIS_PORT}
+mkdir -p ${redis_dir}
 chown redis:redis /var/log/redis
-chown redis:redis /var/lib/redis/node${index}-${REDIS_PORT}
+chown redis:redis ${redis_dir}
 CMD
 )"
     index=$((index + 1))
@@ -267,33 +336,34 @@ debug "写入 Redis 配置开始..."
 
 index=1
 for ip in "${REDIS_NODES[@]}"; do
+    redis_dir="$(render_path_template "${REDIS_DIR_TEMPLATE}" "${index}" "${REDIS_PORT}")"
+    appendfilename="$(render_path_template "${APPENDFILENAME_TEMPLATE}" "${index}" "${REDIS_PORT}")"
+
     if [[ "${ip}" == "${MASTER_IP}" ]]; then
         remote_exec "${ip}" "Write redis.conf (master) on node${index}" "$(cat <<CMD
 set -euo pipefail
 cat > /etc/redis/redis.conf <<'REDIS_EOF'
-bind 0.0.0.0
+bind ${REDIS_BIND}
 port ${REDIS_PORT}
-daemonize yes
-protected-mode no
+daemonize ${DAEMONIZE}
+protected-mode ${PROTECTED_MODE}
 
-dir /var/lib/redis/node${index}-${REDIS_PORT}
-logfile /var/log/redis/redis.log
+dir ${redis_dir}
+logfile ${REDIS_LOGFILE}
 
 maxmemory ${MAXMEMORY}
-maxmemory-policy allkeys-lru
+maxmemory-policy ${MAXMEMORY_POLICY}
 
-appendonly yes
-appendfilename "node${index}-${REDIS_PORT}-appendonly.aof"
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-save 900 1
+appendonly ${APPENDONLY}
+appendfilename "${appendfilename}"
+auto-aof-rewrite-percentage ${AUTO_AOF_REWRITE_PERCENTAGE}
+auto-aof-rewrite-min-size ${AUTO_AOF_REWRITE_MIN_SIZE}
+save ${SAVE}
 
-replica-read-only yes
-min-replicas-to-write 1
-min-replicas-max-lag 10
-
-requirepass ${REDIS_PASS}
-masterauth ${REDIS_PASS}
+replica-read-only ${REPLICA_READ_ONLY}
+min-replicas-to-write ${MIN_REPLICAS_TO_WRITE}
+min-replicas-max-lag ${MIN_REPLICAS_MAX_LAG}
+${AUTH_REDIS_LINES}
 REDIS_EOF
 chown redis:redis /etc/redis/redis.conf
 chmod 640 /etc/redis/redis.conf
@@ -303,31 +373,29 @@ CMD
         remote_exec "${ip}" "Write redis.conf (slave) on node${index}" "$(cat <<CMD
 set -euo pipefail
 cat > /etc/redis/redis.conf <<'REDIS_EOF'
-bind 0.0.0.0
+bind ${REDIS_BIND}
 port ${REDIS_PORT}
-daemonize yes
-protected-mode no
+daemonize ${DAEMONIZE}
+protected-mode ${PROTECTED_MODE}
 
-dir /var/lib/redis/node${index}-${REDIS_PORT}
-logfile /var/log/redis/redis.log
+dir ${redis_dir}
+logfile ${REDIS_LOGFILE}
 
 maxmemory ${MAXMEMORY}
-maxmemory-policy allkeys-lru
+maxmemory-policy ${MAXMEMORY_POLICY}
 
 replicaof ${MASTER_IP} ${MASTER_PORT}
-replica-read-only yes
+replica-read-only ${REPLICA_READ_ONLY}
 
-appendonly yes
-appendfilename "node${index}-${REDIS_PORT}-appendonly.aof"
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-save 900 1
+appendonly ${APPENDONLY}
+appendfilename "${appendfilename}"
+auto-aof-rewrite-percentage ${AUTO_AOF_REWRITE_PERCENTAGE}
+auto-aof-rewrite-min-size ${AUTO_AOF_REWRITE_MIN_SIZE}
+save ${SAVE}
 
-min-replicas-to-write 1
-min-replicas-max-lag 10
-
-requirepass ${REDIS_PASS}
-masterauth ${REDIS_PASS}
+min-replicas-to-write ${MIN_REPLICAS_TO_WRITE}
+min-replicas-max-lag ${MIN_REPLICAS_MAX_LAG}
+${AUTH_REDIS_LINES}
 REDIS_EOF
 chown redis:redis /etc/redis/redis.conf
 chmod 640 /etc/redis/redis.conf
@@ -347,21 +415,21 @@ for ip in "${SENTINEL_NODES[@]}"; do
     remote_exec "${ip}" "Write sentinel.conf" "$(cat <<CMD
 set -euo pipefail
 cat > /etc/redis/sentinel.conf <<'SENTINEL_EOF'
-bind 0.0.0.0
+bind ${SENTINEL_BIND}
 port ${SENTINEL_PORT}
-protected-mode no
+protected-mode ${SENTINEL_PROTECTED_MODE}
 
-pidfile /var/run/redis-sentinel.pid
-logfile /var/log/redis/sentinel.log
-dir /tmp
+pidfile ${SENTINEL_PIDFILE}
+logfile ${SENTINEL_LOGFILE}
+dir ${SENTINEL_DIR}
 
 sentinel monitor ${MASTER_NAME} ${MASTER_IP} ${MASTER_PORT} ${SENTINEL_QUORUM}
-sentinel auth-pass ${MASTER_NAME} ${REDIS_PASS}
+${AUTH_SENTINEL_LINE}
 sentinel down-after-milliseconds ${MASTER_NAME} ${DOWN_AFTER_MS}
 sentinel failover-timeout ${MASTER_NAME} ${FAILOVER_TIMEOUT}
 sentinel parallel-syncs ${MASTER_NAME} ${PARALLEL_SYNCS}
 
-sentinel deny-scripts-reconfig yes
+sentinel deny-scripts-reconfig ${DENY_SCRIPTS_RECONFIG}
 SENTINEL_EOF
 chown redis:redis /etc/redis/sentinel.conf
 chmod 640 /etc/redis/sentinel.conf
@@ -391,9 +459,9 @@ for ip in "${REDIS_NODES[@]}"; do
 
     remote_exec "${ip}" "Start redis (slave first) on node${index}" "$(cat <<CMD
 set -euo pipefail
-systemctl restart redis
-systemctl enable redis
-systemctl is-active redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl is-active redis-server
 CMD
 )"
     index=$((index + 1))
@@ -401,9 +469,9 @@ done
 
 remote_exec "${MASTER_IP}" "Start redis (master)" "$(cat <<CMD
 set -euo pipefail
-systemctl restart redis
-systemctl enable redis
-systemctl is-active redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl is-active redis-server
 CMD
 )"
 

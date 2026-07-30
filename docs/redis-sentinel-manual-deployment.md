@@ -33,7 +33,7 @@ apt install redis -y
 
 # 检查安装
 redis-server --version
-systemctl status redis
+systemctl status redis-server
 ```
 
 ## 3. 安装 Sentinel
@@ -234,14 +234,14 @@ sentinel deny-scripts-reconfig yes
 # 建议从节点先启动、主节点后启动，避免短暂复制异常
 
 # 在 node2、node3、node4 执行
-systemctl restart redis
-systemctl enable redis
-systemctl status redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl status redis-server
 
 # 在 node1 执行
-systemctl restart redis
-systemctl enable redis
-systemctl status redis
+systemctl restart redis-server
+systemctl enable redis-server
+systemctl status redis-server
 
 # 在 node1、node2、node3 执行
 systemctl restart redis-sentinel
@@ -340,7 +340,7 @@ redis-cli -h 192.168.255.95 -p 6379 -a REPLACE_REDIS_PASSWORD INFO memory | grep
 redis-cli -h 192.168.255.95 -p 6379 -a REPLACE_REDIS_PASSWORD INFO memory | grep maxmemory_human
 
 # 查看服务状态
-systemctl status redis
+systemctl status redis-server
 systemctl status redis-sentinel
 ```
 
@@ -350,7 +350,7 @@ systemctl status redis-sentinel
 
 ```bash
 # 11.1 模拟 Master 故障：在 node1 执行
-systemctl stop redis
+systemctl stop redis-server
 
 # 在 node2 或 node3 执行
 redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
@@ -358,7 +358,7 @@ redis-cli -p 26379 SENTINEL get-master-addr-by-name mymaster
 # 预期：新 Master 地址不再是 192.168.255.95，应为 node2、node3 或 node4 之一
 
 # 11.2 恢复原 Master：在 node1 执行
-systemctl start redis
+systemctl start redis-server
 redis-cli -a REPLACE_REDIS_PASSWORD INFO replication | grep -E 'role|master_host|master_port'
 
 # 预期：node1 自动降级为 Slave，并指向新的 Master
