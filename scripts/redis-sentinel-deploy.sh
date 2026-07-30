@@ -295,6 +295,8 @@ min-replicas-max-lag 10
 requirepass ${REDIS_PASS}
 masterauth ${REDIS_PASS}
 REDIS_EOF
+chown redis:redis /etc/redis/redis.conf
+chmod 640 /etc/redis/redis.conf
 CMD
 )"
     else
@@ -327,6 +329,8 @@ min-replicas-max-lag 10
 requirepass ${REDIS_PASS}
 masterauth ${REDIS_PASS}
 REDIS_EOF
+chown redis:redis /etc/redis/redis.conf
+chmod 640 /etc/redis/redis.conf
 CMD
 )"
     fi
@@ -359,6 +363,8 @@ sentinel parallel-syncs ${MASTER_NAME} ${PARALLEL_SYNCS}
 
 sentinel deny-scripts-reconfig yes
 SENTINEL_EOF
+chown redis:redis /etc/redis/sentinel.conf
+chmod 640 /etc/redis/sentinel.conf
 CMD
 )"
 done
@@ -421,27 +427,51 @@ debug "启动 Sentinel 完成"
 debug "部署验收开始..."
 
 slave_count=$(( ${#REDIS_NODES[@]} - 1 ))
+sentinel_count=${#SENTINEL_NODES[@]}
 
 remote_exec "${MASTER_IP}" "Verify redis replication on master" "$(cat <<CMD
 set -euo pipefail
-out=\$(redis-cli -a '${REDIS_PASS}' INFO replication)
+ok=0
+out=""
+for _ in \$(seq 1 30); do
+  if [[ -n '${REDIS_PASS}' ]]; then
+    out=\$(redis-cli -a '${REDIS_PASS}' INFO replication 2>/dev/null || true)
+  else
+    out=\$(redis-cli INFO replication 2>/dev/null || true)
+  fi
+  if echo "\${out}" | grep -q 'role:master' && echo "\${out}" | grep -q "connected_slaves:${slave_count}"; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
 echo "\${out}"
-echo "\${out}" | grep -q 'role:master'
-echo "\${out}" | grep -q "connected_slaves:${slave_count}"
+[[ "\${ok}" -eq 1 ]]
 CMD
 )"
 
 remote_exec "${SENTINEL_NODES[0]}" "Verify sentinel cluster" "$(cat <<CMD
 set -euo pipefail
-out=\$(redis-cli -p ${SENTINEL_PORT} INFO sentinel)
+ok=0
+out=""
+master_addr=""
+for _ in \$(seq 1 30); do
+  out=\$(redis-cli -p ${SENTINEL_PORT} INFO sentinel 2>/dev/null || true)
+  if echo "\${out}" | grep -q 'sentinel_masters:1' \
+    && echo "\${out}" | grep -q 'name=${MASTER_NAME}' \
+    && echo "\${out}" | grep -q 'slaves=${slave_count}' \
+    && echo "\${out}" | grep -q 'sentinels=${sentinel_count}'; then
+    master_addr=\$(redis-cli -p ${SENTINEL_PORT} SENTINEL get-master-addr-by-name ${MASTER_NAME} 2>/dev/null || true)
+    if echo "\${master_addr}" | grep -q '${MASTER_IP}'; then
+      ok=1
+      break
+    fi
+  fi
+  sleep 1
+done
 echo "\${out}"
-echo "\${out}" | grep -q 'sentinel_masters:1'
-echo "\${out}" | grep -q 'name=${MASTER_NAME}'
-echo "\${out}" | grep -q 'slaves=${slave_count}'
-echo "\${out}" | grep -q 'sentinels=${#SENTINEL_NODES[@]}'
-master_addr=\$(redis-cli -p ${SENTINEL_PORT} SENTINEL get-master-addr-by-name ${MASTER_NAME})
 echo "MASTER_ADDR=\${master_addr}"
-echo "\${master_addr}" | grep -q '${MASTER_IP}'
+[[ "\${ok}" -eq 1 ]]
 CMD
 )"
 
