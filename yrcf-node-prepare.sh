@@ -331,8 +331,10 @@ remote_execute() {
 }
 
 configure_all_to_all_ssh() {
-    local node ip pubkey peer peer_ip
+    local node ip pubkey peer peer_ip attempt ok
     local -a public_keys=()
+    local max_attempts=5
+    local retry_delay=3
 
     info "收集各节点SSH公钥"
     for node in "${NODES[@]}"; do
@@ -342,18 +344,39 @@ configure_all_to_all_ssh() {
         public_keys+=("$pubkey")
     done
 
+    info "向各节点分发SSH公钥"
     for node in "${NODES[@]}"; do
         ip="$(cfg "$node" connect_ip)"
         for pubkey in "${public_keys[@]}"; do
             printf '%s\n' "$pubkey" | run_ssh "$ip" \
-                "umask 077; mkdir -p /root/.ssh; touch /root/.ssh/authorized_keys; key=\$(cat); grep -qxF \"\$key\" /root/.ssh/authorized_keys || printf '%s\n' \"\$key\" >> /root/.ssh/authorized_keys"
+                "umask 077; mkdir -p /root/.ssh; touch /root/.ssh/authorized_keys; key=\$(cat); grep -qxF \"\$key\" /root/.ssh/authorized_keys || printf '%s\n' \"\$key\" >> /root/.ssh/authorized_keys" ||
+                die "[$node] 写入SSH公钥失败"
         done
+    done
 
+    info "检查节点间SSH互信"
+    for node in "${NODES[@]}"; do
+        ip="$(cfg "$node" connect_ip)"
         for peer in "${NODES[@]}"; do
+            [[ "$node" == "$peer" ]] && continue
             peer_ip="$(cfg "$peer" hosts_ip "$(cfg "$peer" connect_ip)")"
-            run_ssh "$ip" \
-                "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@'$peer_ip' hostname >/dev/null" ||
+            ok=0
+            for ((attempt = 1; attempt <= max_attempts; attempt++)); do
+                if run_ssh "$ip" \
+                    "ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@'$peer_ip' hostname >/dev/null"; then
+                    ok=1
+                    break
+                fi
+                if ((attempt < max_attempts)); then
+                    warn "[$node] 访问 $peer($peer_ip) 失败，${retry_delay}s 后重试 ($attempt/$max_attempts)"
+                    sleep "$retry_delay"
+                fi
+            done
+            if ((ok == 0)); then
                 fail "[$node] 无法免密访问 $peer($peer_ip)"
+            else
+                info "[$node] 免密访问 $peer($peer_ip) 正常"
+            fi
         done
     done
 }
