@@ -67,7 +67,7 @@ systemctl list-units --type=service --state=active --no-legend |
 
 ```bash
 export ETCDCTL_API=3
-export ETCDCTL_ENDPOINTS="http://192.168.255.95:22379,http://192.168.255.96:22379"
+export ETCDCTL_ENDPOINTS="http://192.168.255.95:2379,http://192.168.255.96:2379"
 
 etcdctl del /yrcf/ --prefix
 ```

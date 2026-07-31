@@ -158,13 +158,13 @@ for node in "${ETCD_NODES[@]}"; do
     # 把 node 里的 : 换成空格，逐个 IP 处理
     for ip in $(echo "${node}" | tr ',' ' '); do
         # ✅ 每个 IP 一个 etcdX= 条目
-        INITIAL_CLUSTER+="${name}=http://${ip}:22380,"
+        INITIAL_CLUSTER+="${name}=http://${ip}:2380,"
         debug "INITIAL_CLUSTER=$INITIAL_CLUSTER"
     done
 
     # ETCDCTL_ENDPOINTS
     primary_ip="${node%%,*}" #取配置文件中每个节点第一个ip
-    ETCDCTL_ENDPOINTS+="http://${primary_ip}:22379,"
+    ETCDCTL_ENDPOINTS+="http://${primary_ip}:2379,"
     debug "ETCDCTL_ENDPOINTS=$ETCDCTL_ENDPOINTS"
 
     index=$((index + 1))
@@ -263,15 +263,15 @@ set -e
 peer_urls=""
 adv_urls=""
 for ip in ${all_ips//,/ }; do
-    peer_urls+="http://\${ip}:22380,"
-    adv_urls+="http://\${ip}:22379,"
+    peer_urls+="http://\${ip}:2380,"
+    adv_urls+="http://\${ip}:2379,"
 done
 
 cat > /etc/etcd/etcd.conf << CONF
 ETCD_NAME="${name}"
 ETCD_DATA_DIR="${data_dir}"
 ETCD_LISTEN_PEER_URLS="\${peer_urls%,}"
-ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:22379"
+ETCD_LISTEN_CLIENT_URLS="http://0.0.0.0:2379"
 ETCD_INITIAL_ADVERTISE_PEER_URLS="\${peer_urls%,}"
 ETCD_INITIAL_CLUSTER="${INITIAL_CLUSTER}"
 ETCD_INITIAL_CLUSTER_STATE="new"
