@@ -357,7 +357,7 @@ deploy_oss() {
         local check_proc
         for check_proc in "${CHECK_PROCS[@]}"; do
             if [[ -z "${check_proc}" || "${check_proc}" == ,* || "${check_proc}" == *, || "${check_proc}" == *",,"* ]]; then
-                log_oss "ERROR: every OSS instance must contain at least one non-empty disk"
+                log_oss "ERROR: every OSS instance must contain at least one non-empty mount point"
                 exit 1
             fi
         done
@@ -460,26 +460,25 @@ fi)
 YAML
 EOF
 
-            ################################ 6. 每个磁盘 install ###############################
-            IFS=',' read -ra DISKS <<< "${proc}"
-            for disk in "${DISKS[@]}"; do
+            ################################ 6. 每个挂载点 install ###############################
+            IFS=',' read -ra MOUNTS <<< "${proc}"
+            for mp in "${MOUNTS[@]}"; do
                 local i_val=$(( node_idx * 100 + disk_seq ))
                 local I_val="tg${i_val}"
 
-                log_oss "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
-                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+                log_oss "    → Install mount ${mp} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+                debug   "    → Install mount ${mp} (-S ${node_name} -s ${s_val} -i ${i_val} -I ${I_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
 
                 sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
 set -euo pipefail
 
-MOUNT_POINT=\$(df -h "${disk}" | awk 'NR==2{print \$6}')
-if [[ -z "\${MOUNT_POINT}" ]]; then
-    echo "ERROR: ${disk} not mounted"
+if ! findmnt -rn -M "${mp}" >/dev/null 2>&1; then
+    echo "ERROR: ${mp} is not a mounted filesystem"
     exit 1
 fi
 
 /usr/local/sbin/install-yrfs-oss \
-  -p "\${MOUNT_POINT}/" \
+  -p "${mp}/" \
   -S ${node_name} \
   -s ${s_val} \
   -i ${i_val} \
@@ -568,7 +567,7 @@ deploy_mds() {
         local check_proc
         for check_proc in "${CHECK_PROCS[@]}"; do
             if [[ -z "${check_proc}" || "${check_proc}" == ,* || "${check_proc}" == *, || "${check_proc}" == *",,"* ]]; then
-                log_mds "ERROR: every MDS instance must contain at least one non-empty disk"
+                log_mds "ERROR: every MDS instance must contain at least one non-empty mount point"
                 exit 1
             fi
         done
@@ -673,23 +672,22 @@ fi)
 YAML
 EOF
 
-            ################################ 6. 每个磁盘执行 install ###############################
-            IFS=',' read -ra DISKS <<< "${proc}"
-            for disk in "${DISKS[@]}"; do
-                log_mds "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
-                debug   "    → Install disk ${disk} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+            ################################ 6. 每个挂载点执行 install ###############################
+            IFS=',' read -ra MOUNTS <<< "${proc}"
+            for mp in "${MOUNTS[@]}"; do
+                log_mds "    → Install mount ${mp} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
+                debug   "    → Install mount ${mp} (-S ${node_name} -s ${s_val} -c ${conf_file} -m ${ALL_MGR_IPS})"
 
                 sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${primary_ip}" bash <<EOF
 set -euo pipefail
 
-MOUNT_POINT=\$(df -h "${disk}" | awk 'NR==2{print \$6}')
-if [[ -z "\${MOUNT_POINT}" ]]; then
-    echo "ERROR: ${disk} not mounted"
+if ! findmnt -rn -M "${mp}" >/dev/null 2>&1; then
+    echo "ERROR: ${mp} is not a mounted filesystem"
     exit 1
 fi
 
 /usr/local/sbin/install-yrfs-mds \
-  -p "\${MOUNT_POINT}/" \
+  -p "${mp}/" \
   -S ${node_name} \
   -s ${s_val} \
   -c ${conf_file} \

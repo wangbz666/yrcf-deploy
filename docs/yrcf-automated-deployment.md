@@ -26,7 +26,9 @@ vim /etc/yrfs/yrfs-deploy.conf
 
 ```ini
 # 分隔规则：
-# : 分隔节点，, 分隔同一节点的IP或磁盘，| 分隔同一节点的服务实例。
+# : 分隔节点，, 分隔同一节点的 IP、磁盘或挂载点，| 分隔同一节点的服务实例。
+# mds_disk / oss_disk 填 /dev/nvme* 盘符（给格式化脚本）；
+# mds_install / oss_install 填 /data/mds*、/data/oss* 挂载点（给部署脚本）。
 # 注释必须单独占一行，不要追加在配置值末尾。
 
 # etcd部署在node1、node2；每组依次为TCP、ib0、ib1，首个IP用于SSH。
@@ -39,8 +41,8 @@ root_password=Passw0rd
 mds_ip=192.168.255.95,100.18.60.95,100.18.60.195:192.168.255.96,100.18.60.96,100.18.60.196
 # 格式化脚本使用的MDS磁盘。
 mds_disk=/dev/nvme0n1:/dev/nvme0n1
-# MDS实例与磁盘的对应关系。
-mds_install=/dev/nvme0n1:/dev/nvme0n1
+# MDS实例与挂载点对应关系（格式化后一般为 /data/mds0）。
+mds_install=/data/mds0:/data/mds0
 # node1优先ib0，node2优先ib1。
 mds_ipwhitelist=100.18.60.95,100.18.60.195,192.168.255.95:100.18.60.196,100.18.60.96,192.168.255.96
 mds_net=100.18.60.0/24,192.168.0.0/16
@@ -49,10 +51,10 @@ mds_rdma_ip=100.18.60.95,100.18.60.195:100.18.60.96,100.18.60.196
 
 # OSS部署在4个节点；每组依次为TCP、ib0、ib1，首个IP用于SSH。
 oss_ip=192.168.255.95,100.18.60.95,100.18.60.195:192.168.255.96,100.18.60.96,100.18.60.196:192.168.255.97,100.18.60.97,100.18.60.197:192.168.255.98,100.18.60.98,100.18.60.198
-# 格式化脚本使用的全部OSS磁盘；每个节点6块。
+# 格式化脚本使用的全部OSS磁盘；每个节点6块（按顺序挂到 /data/oss0~/data/oss5）。
 oss_disk=/dev/nvme9n1,/dev/nvme2n1,/dev/nvme3n1,/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1:/dev/nvme1n1,/dev/nvme2n1,/dev/nvme3n1,/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1:/dev/nvme0n1,/dev/nvme2n1,/dev/nvme4n1,/dev/nvme5n1,/dev/nvme10n1,/dev/nvme11n1:/dev/nvme0n1,/dev/nvme2n1,/dev/nvme3n1,/dev/nvme1n1,/dev/nvme4n1,/dev/nvme9n1
-# 每个节点以|分成oss0和oss1，每个实例管理3块磁盘。
-oss_install=/dev/nvme9n1,/dev/nvme2n1,/dev/nvme3n1|/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1:/dev/nvme1n1,/dev/nvme2n1,/dev/nvme3n1|/dev/nvme4n1,/dev/nvme5n1,/dev/nvme6n1:/dev/nvme0n1,/dev/nvme2n1,/dev/nvme4n1|/dev/nvme5n1,/dev/nvme10n1,/dev/nvme11n1:/dev/nvme0n1,/dev/nvme2n1,/dev/nvme3n1|/dev/nvme1n1,/dev/nvme4n1,/dev/nvme9n1
+# 每个节点以|分成oss0和oss1；写挂载点，避免 reboot 后 /dev/nvme* 盘符变化。
+oss_install=/data/oss0,/data/oss1,/data/oss2|/data/oss3,/data/oss4,/data/oss5:/data/oss0,/data/oss1,/data/oss2|/data/oss3,/data/oss4,/data/oss5:/data/oss0,/data/oss1,/data/oss2|/data/oss3,/data/oss4,/data/oss5:/data/oss0,/data/oss1,/data/oss2|/data/oss3,/data/oss4,/data/oss5
 # oss0优先ib0，oss1优先ib1；两者均允许使用ib0、ib1和TCP。
 oss_ipwhitelist=100.18.60.95,100.18.60.195,192.168.255.95|100.18.60.195,100.18.60.95,192.168.255.95:100.18.60.96,100.18.60.196,192.168.255.96|100.18.60.196,100.18.60.96,192.168.255.96:100.18.60.97,100.18.60.197,192.168.255.97|100.18.60.197,100.18.60.97,192.168.255.97:100.18.60.98,100.18.60.198,192.168.255.98|100.18.60.198,100.18.60.98,192.168.255.98
 oss_net=100.18.60.0/24,192.168.0.0/16
