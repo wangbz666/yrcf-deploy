@@ -7,11 +7,11 @@
 # 3. 标有“必填”的节点配置缺失时，脚本会在修改系统前停止。
 
 [global]
-# 可选。预期CPU架构；不配置或留空时不检查架构。
-expected_arch=aarch64
+# 可选。预期CPU架构；不配或留空时不检查，仅显示实际架构。
+# expected_arch=aarch64
 
-# 可选。预期操作系统ID；默认值：ubuntu。
-expected_os_id=ubuntu
+# 可选。预期操作系统ID（/etc/os-release 中的 ID）；不配或留空时不检查，仅显示实际系统。
+# expected_os_id=ubuntu
 
 # 可选。最低内存，单位GiB；默认值：0，表示不检查最低内存。
 min_memory_gb=0
@@ -22,11 +22,15 @@ disable_ufw=true
 # 可选。是否关闭AppArmor；默认值：true。
 disable_apparmor=true
 
-# 可选。Netplan渲染器；默认值：networkd。
+# 可选。每张 IB 网卡的 Netplan renderer；默认值：networkd。
 netplan_renderer=networkd
 
-# 可选。脚本生成的Netplan文件；默认值如下。
-netplan_file=/etc/netplan/60-yrcf-route.yaml
+# 可选。显式指定 Netplan 文件路径；配置后不再使用 netplan_file_template。
+# netplan_file=/etc/netplan/60-yrcf-route.yaml
+
+# 可选。按 connect_ip 末段生成 IB Netplan 文件；默认值如下。
+# 例如 connect_ip=192.168.255.95 时生成 /etc/netplan/95-ib-net.yaml
+netplan_file_template=/etc/netplan/{id}-ib-net.yaml
 
 # 可选。控制节点SSH私钥；默认值如下，不存在时自动生成。
 controller_key=/root/.ssh/id_rsa

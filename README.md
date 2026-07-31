@@ -49,16 +49,20 @@ cp node-prepare.conf.example node-prepare.conf
 - `<网卡>_network`：该网卡路由表中的直连网段
 - `<网卡>_table`：策略路由表号
 - `expected_disks`：预期存在且未挂载的磁盘列表
+- `netplan_file_template`：IB 网卡 Netplan 路径模板，`{id}` 为 `connect_ip` 末段（默认 `/etc/netplan/{id}-ib-net.yaml`）
+- `netplan_renderer`：每张 IB 网卡的 renderer（默认 `networkd`）
 
-路由策略按单个源地址生成。例如：
+脚本只生成 IB 网卡 Netplan（如 `95-ib-net.yaml`），不配置管理网（如 vlan50 / 192.168.255.x）。
+
+每张网卡的策略路由包含 `from` 与 `to` 两条规则。例如：
 
 ```yaml
 routing-policy:
   - from: 100.18.60.95/32
     table: 20
+  - to: 100.18.60.95/32
+    table: 20
 ```
-
-`/32`表示只匹配该网卡自身的源IP，不会改变网卡地址的`/24`掩码。
 
 ## 使用
 
@@ -110,8 +114,10 @@ chmod +x yrcf-node-prepare.sh
 
 ```text
 /etc/hosts.yrcf-backup.<时间戳>
-/etc/netplan/60-yrcf-route.yaml.yrcf-backup.<时间戳>
+/etc/netplan/95-ib-net.yaml.yrcf-backup.<时间戳>
 ```
+
+默认按 `connect_ip` 末段生成 IB Netplan 文件，例如 `192.168.255.95` → `/etc/netplan/95-ib-net.yaml`。
 
 Netplan语法检查或应用失败时，脚本会立即恢复执行前的Netplan文件。
 
@@ -120,6 +126,6 @@ Netplan语法检查或应用失败时，脚本会立即恢复执行前的Netplan
 - 脚本会停止并禁用UFW和AppArmor。
 - 脚本会修改主机名、`/etc/hosts`和Netplan配置。
 - `expected_disks`只用于检查，脚本不会清理、挂载或格式化磁盘。
-- Netplan会合并`/etc/netplan/`中的配置。执行前应检查其他文件中是否重复配置了相同网卡。
+- Netplan会合并`/etc/netplan/`中的配置。脚本只写入 IB 网卡文件，不修改 vlan50 等管理网配置；执行前应确认其他文件未重复配置相同 IB 网卡。
 - 网络配置存在导致节点失联的风险，首次执行应通过带外管理观察。
 - 不要在配置文件中保存root密码。

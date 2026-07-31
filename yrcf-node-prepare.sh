@@ -254,6 +254,7 @@ print_plan() {
                 "$(cfg "$node" "${iface}_table")"
         done
         printf '  预期磁盘：%s\n' "$(cfg "$node" expected_disks 未指定)"
+        printf '  Netplan文件：%s\n' "$(resolve_netplan_file "$node")"
     done
 }
 
@@ -366,7 +367,7 @@ check_os_hardware() {
     local expected_arch expected_os actual_arch actual_os pretty_os
     local min_memory_gb memory_gb
     expected_arch="$(cfg global expected_arch)"
-    expected_os="$(cfg global expected_os_id ubuntu)"
+    expected_os="$(cfg global expected_os_id)"
     actual_arch="$(uname -m)"
     actual_os="$(awk -F= '$1 == "ID" {
         value=substr($0, index($0, "=") + 1)
@@ -499,6 +500,23 @@ ensure_node_key() {
     fi
 }
 
+resolve_netplan_file() {
+    local node="$1"
+    local explicit template connect_ip id out
+
+    explicit="$(cfg global netplan_file)"
+    if [[ -n "$explicit" ]]; then
+        printf '%s' "$explicit"
+        return
+    fi
+
+    template="$(cfg global netplan_file_template /etc/netplan/{id}-ib-net.yaml)"
+    connect_ip="$(cfg "$node" connect_ip)"
+    id="${connect_ip##*.}"
+    out="${template//\{id\}/$id}"
+    printf '%s' "$out"
+}
+
 generate_netplan() {
     local output="$1"
     local interfaces iface address table network source_ip renderer
@@ -508,7 +526,6 @@ generate_netplan() {
     {
         printf 'network:\n'
         printf '  version: 2\n'
-        printf '  renderer: %s\n' "$renderer"
         printf '  ethernets:\n'
         IFS=',' read -ra iface_list <<< "$interfaces"
         for iface in "${iface_list[@]}"; do
@@ -518,6 +535,11 @@ generate_netplan() {
             network="$(cfg "$CURRENT_NODE" "${iface}_network")"
             source_ip="${address%%/*}"
             printf '    %s:\n' "$iface"
+            printf '      renderer: %s\n' "$renderer"
+            printf '      match:\n'
+            printf '        name: %s\n' "$iface"
+            printf '      dhcp4: false\n'
+            printf '      optional: true\n'
             printf '      addresses:\n'
             printf '        - %s\n' "$address"
             printf '      routes:\n'
@@ -526,6 +548,8 @@ generate_netplan() {
             printf '          table: %s\n' "$table"
             printf '      routing-policy:\n'
             printf '        - from: %s/32\n' "$source_ip"
+            printf '          table: %s\n' "$table"
+            printf '        - to: %s/32\n' "$source_ip"
             printf '          table: %s\n' "$table"
         done
     } > "$output"
@@ -545,7 +569,7 @@ restore_netplan() {
 
 configure_network() {
     local target temp_file backup="" errors_before
-    target="$(cfg global netplan_file /etc/netplan/60-yrcf-route.yaml)"
+    target="$(resolve_netplan_file "$CURRENT_NODE")"
     temp_file="$(mktemp)"
     generate_netplan "$temp_file"
 
@@ -595,6 +619,8 @@ check_network() {
             fail "$iface 未配置地址 $address"
         ip rule show | grep -Eq "from ${source_ip//./\\.}(/32)? .*lookup ${table}([[:space:]]|$)" ||
             fail "$iface 缺少源地址策略路由"
+        ip rule show | grep -Eq "to ${source_ip//./\\.}(/32)? .*lookup ${table}([[:space:]]|$)" ||
+            fail "$iface 缺少目的地址策略路由"
         ip route show table "$table" | grep -Eq "^${network//./\\.} .*dev ${iface}([[:space:]]|$)" ||
             fail "路由表 $table 缺少 $network dev $iface"
 
