@@ -19,16 +19,16 @@ usage() {
 YRCF 节点环境准备工具
 
 用法：
-  yrcf-node-prepare.sh --config <配置文件> --dry-run
-  yrcf-node-prepare.sh --config <配置文件> --apply
-  yrcf-node-prepare.sh --config <配置文件> --check
+  yrcf-node-prepare.sh [--config <配置文件>] --dry-run
+  yrcf-node-prepare.sh [--config <配置文件>] --apply
+  yrcf-node-prepare.sh [--config <配置文件>] --check
 
 内部参数（请勿手工使用）：
   --local-apply --node <节点名>
   --local-check --node <节点名>
 
 选项：
-  --config FILE    指定 INI 配置文件
+  --config FILE    指定 INI 配置文件；默认 /etc/yrfs/node-prepare.conf
   --apply          从控制节点集中配置所有节点
   --check          从控制节点集中检查所有节点
   --dry-run        校验配置并显示执行计划，不修改节点
@@ -100,7 +100,9 @@ parse_args() {
         esac
     done
 
-    [[ -n "$CONFIG_FILE" ]] || die "必须使用 --config 指定配置文件"
+    if [[ -z "$CONFIG_FILE" ]]; then
+        CONFIG_FILE="/etc/yrfs/node-prepare.conf"
+    fi
     [[ -f "$CONFIG_FILE" ]] || die "配置文件不存在：$CONFIG_FILE"
     [[ -n "$MODE" ]] || die "必须指定 --apply、--check 或 --dry-run"
 

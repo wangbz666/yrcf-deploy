@@ -35,10 +35,10 @@
 复制配置示例：
 
 ```bash
-cp node-prepare.conf.example node-prepare.conf
+cp node-prepare.conf.example /etc/yrfs/node-prepare.conf
 ```
 
-根据实际节点修改`node-prepare.conf`。每个非`global`节代表一个节点，节名称即最终主机名。
+根据实际节点修改`/etc/yrfs/node-prepare.conf`。每个非`global`节代表一个节点，节名称即最终主机名。未指定`--config`时，脚本默认读取该路径。
 
 主要字段：
 
@@ -70,25 +70,26 @@ routing-policy:
 
 ```bash
 chmod +x yrcf-node-prepare.sh
+
+# 默认读取 /etc/yrfs/node-prepare.conf
+./yrcf-node-prepare.sh --dry-run
+
+# 或显式指定配置文件
 ./yrcf-node-prepare.sh \
-  --config node-prepare.conf \
+  --config /etc/yrfs/node-prepare.conf \
   --dry-run
 ```
 
 确认无误后执行配置：
 
 ```bash
-./yrcf-node-prepare.sh \
-  --config node-prepare.conf \
-  --apply
+./yrcf-node-prepare.sh --apply
 ```
 
 仅检查节点，不修改配置：
 
 ```bash
-./yrcf-node-prepare.sh \
-  --config node-prepare.conf \
-  --check
+./yrcf-node-prepare.sh --check
 ```
 
 ## 执行过程
