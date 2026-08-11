@@ -41,6 +41,29 @@ ssh_connect_timeout=10
 # 可选。目标节点执行日志；默认值如下。
 log_file=/var/log/yrcf-node-prepare.log
 
+# 可选。是否配置集群时钟同步；默认值：true。
+# 要求各节点事先手工安装 chrony（apt install -y chrony），脚本不负责安装。
+sync_time=true
+
+# 可选。统一时区；默认值：Asia/Shanghai。
+timezone=Asia/Shanghai
+
+# 可选。外部 NTP 服务器，逗号分隔。配置后所有节点作为客户端同步到这些服务器。
+# 例如：ntp_servers=time.nju.edu.cn,ntp.aliyun.com
+# ntp_servers=
+
+# 可选。集群内时间源节点名（必须是已配置的节点节名）。
+# 仅当 ntp_servers 为空时生效；两者都空时默认使用配置中的第一个节点。
+# ntp_master=node1
+
+# 可选。节点间允许的最大时间偏差（秒）；默认值：1。
+max_time_skew_sec=1
+
+# 可选。是否部署 YRFS/etcd 的 logrotate 配置；默认值：true。
+# 要求系统已安装 logrotate、cron（Ubuntu：apt install -y logrotate cron）；脚本不负责安装。
+# 写入 /etc/logrotate.d/yrfs、/etc/logrotate.d/etcd 与 /etc/cron.d/yrcf-logrotate（每15分钟），重启后仍有效。
+configure_logrotate=true
+
 # 节点配置说明：
 # - 节名称就是最终主机名，例如 [node1] 最终会设置 hostname=node1。
 # - connect_ip：必填。控制节点首次SSH连接使用的现有IP。

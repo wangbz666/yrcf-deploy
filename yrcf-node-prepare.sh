@@ -180,10 +180,13 @@ valid_ipv4_cidr() {
 
 validate_config() {
     local node connect_ip hosts_ip interfaces iface address table network
+    local sync_time timezone ntp_servers ntp_master max_skew
     local -A seen_hosts=()
     local -A seen_connect_ips=()
+    local -A node_set=()
 
     for node in "${NODES[@]}"; do
+        node_set["$node"]=1
         connect_ip="$(require_cfg "$node" connect_ip)"
         hosts_ip="$(cfg "$node" hosts_ip "$connect_ip")"
         interfaces="$(require_cfg "$node" interfaces)"
@@ -218,6 +221,29 @@ validate_config() {
                 die "[$node] ${iface}_table 不是有效路由表号：$table"
         done
     done
+
+    sync_time="$(cfg global sync_time true)"
+    case "${sync_time,,}" in
+        true|yes|1|on|false|no|0|off) ;;
+        *) die "[global] sync_time 必须是 true/false：$sync_time" ;;
+    esac
+
+    timezone="$(cfg global timezone Asia/Shanghai)"
+    [[ -n "$timezone" ]] || die "[global] timezone 不能为空"
+
+    max_skew="$(cfg global max_time_skew_sec 1)"
+    [[ "$max_skew" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
+        die "[global] max_time_skew_sec 必须是非负数字：$max_skew"
+
+    ntp_servers="$(cfg global ntp_servers)"
+    ntp_master="$(cfg global ntp_master)"
+    if [[ -n "$ntp_master" && -z "${node_set[$ntp_master]-}" ]]; then
+        die "[global] ntp_master 不是已配置的节点名：$ntp_master"
+    fi
+    if [[ -z "$ntp_servers" && -z "$ntp_master" ]]; then
+        ntp_master="${NODES[0]}"
+        CFG["global.ntp_master"]="$ntp_master"
+    fi
 }
 
 require_commands() {
@@ -238,8 +264,30 @@ setup_logging() {
 
 print_plan() {
     local node interfaces iface
+    local sync_time timezone ntp_servers ntp_master max_skew
     info "配置文件校验通过，共 ${#NODES[@]} 个节点"
     info "以下操作仅为预览，不会修改系统"
+
+    sync_time="$(cfg global sync_time true)"
+    timezone="$(cfg global timezone Asia/Shanghai)"
+    ntp_servers="$(cfg global ntp_servers)"
+    ntp_master="$(cfg global ntp_master "${NODES[0]}")"
+    max_skew="$(cfg global max_time_skew_sec 1)"
+    printf '\n[时钟同步]\n'
+    printf '  sync_time：%s\n' "$sync_time"
+    printf '  timezone：%s\n' "$timezone"
+    printf '  max_time_skew_sec：%s\n' "$max_skew"
+    if is_true "$sync_time"; then
+        if [[ -n "$ntp_servers" ]]; then
+            printf '  模式：NTP客户端（ntp_servers=%s）\n' "$ntp_servers"
+        else
+            printf '  模式：集群内时间源（ntp_master=%s）\n' "$ntp_master"
+        fi
+        printf '  要求：各节点事先安装 chrony（脚本不负责安装）\n'
+    else
+        printf '  模式：跳过\n'
+    fi
+
     for node in "${NODES[@]}"; do
         printf '\n[%s]\n' "$node"
         printf '  连接地址：%s\n' "$(cfg "$node" connect_ip)"
@@ -381,6 +429,196 @@ configure_all_to_all_ssh() {
     done
 }
 
+# 生成写入 chrony conf.d 的内容：mode=servers|master|client
+build_chrony_managed_conf() {
+    local mode="$1"
+    local ntp_servers="$2"
+    local master_ip="$3"
+    local server item peer peer_ip
+
+    printf '%s\n' '# Managed by yrcf-node-prepare. Do not edit.'
+    case "$mode" in
+        servers)
+            IFS=',' read -ra server_list <<< "$ntp_servers"
+            for item in "${server_list[@]}"; do
+                item="$(trim "$item")"
+                [[ -n "$item" ]] || continue
+                printf 'server %s iburst\n' "$item"
+            done
+            ;;
+        master)
+            printf 'local stratum 10\n'
+            for peer in "${NODES[@]}"; do
+                peer_ip="$(cfg "$peer" hosts_ip "$(cfg "$peer" connect_ip)")"
+                printf 'allow %s\n' "$peer_ip"
+            done
+            ;;
+        client)
+            printf 'server %s iburst\n' "$master_ip"
+            ;;
+        *)
+            die "未知时钟同步模式：$mode"
+            ;;
+    esac
+}
+
+configure_node_time() {
+    local node="$1"
+    local mode="$2"
+    local timezone="$3"
+    local ntp_servers="$4"
+    local master_ip="$5"
+    local ip managed_conf
+    local -a opts=()
+
+    ip="$(cfg "$node" connect_ip)"
+    managed_conf="$(build_chrony_managed_conf "$mode" "$ntp_servers" "$master_ip")"
+    mapfile -t opts < <(ssh_options)
+
+    info "[$node] 配置时钟同步（mode=$mode, timezone=$timezone）"
+    ssh "${opts[@]}" "root@$ip" "bash -s" <<REMOTE
+set -euo pipefail
+timezone='$timezone'
+
+command -v chronyd >/dev/null 2>&1 || {
+    echo "ERROR: chrony 未安装，请先手工执行: apt install -y chrony" >&2
+    exit 1
+}
+command -v chronyc >/dev/null 2>&1 || {
+    echo "ERROR: chronyc 不可用，请确认已安装 chrony" >&2
+    exit 1
+}
+
+timedatectl set-timezone "\$timezone"
+systemctl disable --now systemd-timesyncd 2>/dev/null || true
+
+if [[ -f /etc/chrony/chrony.conf ]]; then
+    if [[ ! -f /etc/chrony/chrony.conf.yrcf-orig ]]; then
+        cp -a /etc/chrony/chrony.conf /etc/chrony/chrony.conf.yrcf-orig
+    fi
+    # 注释主配置中的 stock pool/server，避免与托管源冲突
+    sed -E -i 's/^(pool|server)([[:space:]])/# \1\2/' /etc/chrony/chrony.conf
+    if ! grep -qE '^[[:space:]]*confdir[[:space:]]+/etc/chrony/conf\.d' /etc/chrony/chrony.conf; then
+        printf '\nconfdir /etc/chrony/conf.d\n' >> /etc/chrony/chrony.conf
+    fi
+fi
+
+mkdir -p /etc/chrony/conf.d
+cat > /etc/chrony/conf.d/yrcf-time.conf <<'CONF'
+${managed_conf}
+CONF
+
+systemctl enable chrony >/dev/null
+systemctl restart chrony
+sleep 2
+chronyc -a makestep >/dev/null 2>&1 || chronyc makestep >/dev/null 2>&1 || true
+systemctl is-active --quiet chrony
+REMOTE
+}
+
+configure_cluster_time() {
+    local timezone ntp_servers ntp_master master_ip node mode
+
+    if ! is_true "$(cfg global sync_time true)"; then
+        info "跳过时钟同步（sync_time=false）"
+        return 0
+    fi
+
+    timezone="$(cfg global timezone Asia/Shanghai)"
+    ntp_servers="$(cfg global ntp_servers)"
+    ntp_master="$(cfg global ntp_master "${NODES[0]}")"
+    master_ip="$(cfg "$ntp_master" hosts_ip "$(cfg "$ntp_master" connect_ip)")"
+
+    info "开始配置集群时钟同步"
+    if [[ -n "$ntp_servers" ]]; then
+        info "使用 NTP 服务器：$ntp_servers"
+        for node in "${NODES[@]}"; do
+            configure_node_time "$node" servers "$timezone" "$ntp_servers" "" ||
+                fail "[$node] 时钟同步配置失败"
+        done
+    else
+        info "使用集群时间源：$ntp_master ($master_ip)"
+        for node in "${NODES[@]}"; do
+            if [[ "$node" == "$ntp_master" ]]; then
+                mode=master
+            else
+                mode=client
+            fi
+            configure_node_time "$node" "$mode" "$timezone" "" "$master_ip" ||
+                fail "[$node] 时钟同步配置失败"
+        done
+    fi
+
+    sleep 3
+    check_cluster_time_skew
+}
+
+check_node_time() {
+    local timezone expected
+    if ! is_true "$(cfg global sync_time true)"; then
+        return 0
+    fi
+
+    timezone="$(cfg global timezone Asia/Shanghai)"
+    if ! command -v chronyd >/dev/null 2>&1; then
+        fail "未安装 chrony，请先手工执行: apt install -y chrony"
+        return 0
+    fi
+    if ! systemctl is-active --quiet chrony; then
+        fail "chrony 服务未运行"
+    else
+        info "chrony 服务运行中"
+    fi
+
+    expected="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+    if [[ -n "$expected" && "$expected" != "$timezone" ]]; then
+        fail "时区不符合预期：实际 $expected，预期 $timezone"
+    else
+        info "时区：$timezone"
+    fi
+}
+
+check_cluster_time_skew() {
+    local node ip epoch max_skew ref_node ref_epoch skew
+    local -A epochs=()
+
+    if ! is_true "$(cfg global sync_time true)"; then
+        return 0
+    fi
+
+    max_skew="$(cfg global max_time_skew_sec 1)"
+    info "检查节点间时间偏差（阈值 ${max_skew}s）"
+
+    for node in "${NODES[@]}"; do
+        ip="$(cfg "$node" connect_ip)"
+        epoch="$(run_ssh "$ip" "date -u +%s" 2>/dev/null || true)"
+        if [[ ! "$epoch" =~ ^[0-9]+$ ]]; then
+            fail "[$node] 无法读取系统时间"
+            continue
+        fi
+        epochs["$node"]="$epoch"
+        info "[$node] unix时间=$epoch"
+    done
+
+    ref_node="${NODES[0]}"
+    ref_epoch="${epochs[$ref_node]-}"
+    [[ -n "$ref_epoch" ]] || return 1
+
+    for node in "${NODES[@]}"; do
+        [[ -n "${epochs[$node]-}" ]] || continue
+        skew=$(( epochs[$node] - ref_epoch ))
+        ((skew < 0)) && skew=$((-skew))
+        # bash 整数比较；支持小数阈值时向下取整到秒，至少按 1 秒比较若阈值为小数
+        if awk -v s="$skew" -v m="$max_skew" 'BEGIN { exit !(s > m) }'; then
+            fail "[$node] 相对 $ref_node 时间偏差 ${skew}s，超过阈值 ${max_skew}s"
+        else
+            info "[$node] 相对 $ref_node 时间偏差 ${skew}s，正常"
+        fi
+    done
+
+    ((ERRORS == 0))
+}
+
 backup_file() {
     local path="$1"
     if [[ -e "$path" ]]; then
@@ -455,6 +693,71 @@ configure_security() {
     fi
 }
 
+configure_logrotate() {
+    if ! is_true "$(cfg global configure_logrotate true)"; then
+        info "跳过日志轮询配置（configure_logrotate=false）"
+        return 0
+    fi
+
+    command -v logrotate >/dev/null 2>&1 ||
+        die "未安装 logrotate，请先手工安装后再执行"
+
+    mkdir -p /etc/logrotate.d
+
+    # 与现网参考机（如 192.168.21.10）保持一致：copytruncate + maxsize + compress
+    cat > /etc/logrotate.d/yrfs <<'EOF'
+compress
+/var/log/yrfs*.log {
+    rotate 10
+    missingok
+    compress
+    maxsize 1G
+    copytruncate
+}
+EOF
+
+    # 覆盖 /var/log/etcd.log 与 /var/log/etcd/*.log（本仓库 etcd 部署路径）
+    cat > /etc/logrotate.d/etcd <<'EOF'
+compress
+/var/log/etcd*.log
+/var/log/etcd/*.log {
+    rotate 10
+    missingok
+    compress
+    maxsize 100M
+    copytruncate
+}
+EOF
+
+    chmod 644 /etc/logrotate.d/yrfs /etc/logrotate.d/etcd
+    if ! logrotate -d /etc/logrotate.d/yrfs >/dev/null 2>&1; then
+        die "logrotate 配置语法检查失败：/etc/logrotate.d/yrfs"
+    fi
+    if ! logrotate -d /etc/logrotate.d/etcd >/dev/null 2>&1; then
+        die "logrotate 配置语法检查失败：/etc/logrotate.d/etcd"
+    fi
+
+    # 每 15 分钟检查 yrfs/etcd 日志（使 maxsize 及时生效；Ubuntu/CentOS 通用）
+    command -v crontab >/dev/null 2>&1 ||
+        die "未安装 cron，请先手工执行: apt install -y cron"
+
+    cat > /etc/cron.d/yrcf-logrotate <<'EOF'
+# Managed by yrcf-node-prepare. Do not edit.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+*/15 * * * * root /usr/sbin/logrotate /etc/logrotate.d/yrfs /etc/logrotate.d/etcd >/dev/null 2>&1
+EOF
+    chmod 644 /etc/cron.d/yrcf-logrotate
+
+    if systemctl list-unit-files cron.service >/dev/null 2>&1; then
+        systemctl enable --now cron >/dev/null 2>&1 || true
+    elif systemctl list-unit-files crond.service >/dev/null 2>&1; then
+        systemctl enable --now crond >/dev/null 2>&1 || true
+    fi
+
+    info "已部署日志轮询：/etc/logrotate.d/yrfs、/etc/logrotate.d/etcd、/etc/cron.d/yrcf-logrotate（每15分钟）"
+}
+
 check_security() {
     if is_true "$(cfg global disable_ufw true)" &&
         systemctl is-active --quiet ufw 2>/dev/null; then
@@ -468,6 +771,42 @@ check_security() {
         fail "AppArmor仍处于运行状态"
     else
         info "AppArmor状态符合预期"
+    fi
+}
+
+check_logrotate() {
+    if ! is_true "$(cfg global configure_logrotate true)"; then
+        return 0
+    fi
+
+    if ! command -v logrotate >/dev/null 2>&1; then
+        fail "未安装 logrotate"
+        return 0
+    fi
+
+    if [[ ! -f /etc/logrotate.d/yrfs ]]; then
+        fail "缺少 /etc/logrotate.d/yrfs"
+    else
+        info "已存在 /etc/logrotate.d/yrfs"
+    fi
+
+    if [[ ! -f /etc/logrotate.d/etcd ]]; then
+        fail "缺少 /etc/logrotate.d/etcd"
+    else
+        info "已存在 /etc/logrotate.d/etcd"
+    fi
+
+    if [[ ! -f /etc/cron.d/yrcf-logrotate ]]; then
+        fail "缺少 /etc/cron.d/yrcf-logrotate"
+    else
+        info "已存在 /etc/cron.d/yrcf-logrotate"
+    fi
+
+    if systemctl is-active --quiet cron 2>/dev/null ||
+        systemctl is-active --quiet crond 2>/dev/null; then
+        info "cron 服务运行中"
+    else
+        fail "cron 服务未运行（日志轮询定时任务不会执行）"
     fi
 }
 
@@ -698,6 +1037,7 @@ local_apply() {
     check_disks
     ((ERRORS == 0)) || die "系统或硬件预检查失败"
     configure_security
+    configure_logrotate
     configure_hostname_hosts
     ensure_node_key
     configure_network
@@ -714,9 +1054,11 @@ local_check() {
     check_os_hardware
     check_required_interfaces
     check_security
+    check_logrotate
     check_hostname_hosts
     check_network "$check_peers"
     check_disks
+    check_node_time
 
     if ((ERRORS > 0)); then
         log ERROR "[$CURRENT_NODE] 检查失败：${ERRORS}项错误，${WARNINGS}项警告"
@@ -733,8 +1075,12 @@ controller_apply() {
     ((ERRORS == 0)) || die "存在节点配置失败，停止建立节点间互信"
     configure_all_to_all_ssh
     ((ERRORS == 0)) || die "节点间SSH互信检查失败"
+    configure_cluster_time
+    ((ERRORS == 0)) || die "节点时钟同步失败"
     remote_execute check
     ((ERRORS == 0)) || die "节点配置后检查失败"
+    check_cluster_time_skew
+    ((ERRORS == 0)) || die "节点间时间偏差检查失败"
 }
 
 controller_check() {
@@ -744,6 +1090,8 @@ controller_check() {
     if ((ERRORS > 0)); then
         die "节点环境检查失败，共 ${ERRORS} 个节点执行失败"
     fi
+    check_cluster_time_skew
+    ((ERRORS == 0)) || die "节点间时间偏差检查失败"
     info "所有节点环境检查通过"
 }
 
