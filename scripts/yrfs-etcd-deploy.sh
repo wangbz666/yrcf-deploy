@@ -247,14 +247,16 @@ id -u etcd >/dev/null 2>&1 || useradd -m etcd
 mkdir -p /etc/etcd/
 mkdir -p /var/lib/etcd
 mkdir -p ${data_dir}
+mkdir -p /var/log/etcd
 chown -R etcd:etcd /var/lib/etcd
+chown -R etcd:etcd /var/log/etcd
 CMD
 ); then
         status=0
     else
         status=$?
     fi
-    check_remote_status "${primary_ip}" "Create etcd user and data dir" "${out}" "${status}"
+    check_remote_status "${primary_ip}" "Create etcd user, data dir and log dir" "${out}" "${status}"
 
     #################### 4.4 etcd.conf ####################
     debug "node:$node etcd.conf"
@@ -284,6 +286,7 @@ ETCD_AUTO_COMPACTION_RETENTION=10
 ETCD_AUTO_COMPACTION_MODE=revision
 ETCD_SNAPSHOT_COUNT=5000
 ETCD_MAX_WALS=10
+ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log,stderr
 
 ETCD_UNSUPPORTED_ARCH=arm64
 CONF

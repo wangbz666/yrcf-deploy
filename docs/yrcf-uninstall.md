@@ -224,6 +224,7 @@ systemctl disable --now etcd 2>/dev/null || true
 
 rm -f /etc/etcd/etcd.conf
 rm -rf /var/lib/etcd
+rm -rf /var/log/etcd
 rm -f /usr/lib/systemd/system/etcd.service
 
 systemctl daemon-reload
@@ -261,4 +262,5 @@ grep -E '(/data/mds|/data/oss)' /etc/fstab || true
 systemctl status etcd 2>/dev/null || true
 test ! -e /usr/lib/systemd/system/etcd.service
 test ! -e /var/lib/etcd
+test ! -e /var/log/etcd
 ```

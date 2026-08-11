@@ -79,14 +79,16 @@ node1执行：
 
 ```bash
 mkdir -p /var/lib/etcd/etcd0
-chown -R etcd:etcd /var/lib/etcd
+mkdir -p /var/log/etcd
+chown -R etcd:etcd /var/lib/etcd /var/log/etcd
 ```
 
 node2执行：
 
 ```bash
 mkdir -p /var/lib/etcd/etcd1
-chown -R etcd:etcd /var/lib/etcd
+mkdir -p /var/log/etcd
+chown -R etcd:etcd /var/lib/etcd /var/log/etcd
 ```
 
 ### 3.3 配置node1
@@ -110,6 +112,7 @@ ETCD_AUTO_COMPACTION_RETENTION=10
 ETCD_AUTO_COMPACTION_MODE=revision
 ETCD_SNAPSHOT_COUNT=5000
 ETCD_MAX_WALS=10
+ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log,stderr
 ETCD_UNSUPPORTED_ARCH=arm64
 EOF
 ```
@@ -135,6 +138,7 @@ ETCD_AUTO_COMPACTION_RETENTION=10
 ETCD_AUTO_COMPACTION_MODE=revision
 ETCD_SNAPSHOT_COUNT=5000
 ETCD_MAX_WALS=10
+ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log,stderr
 ETCD_UNSUPPORTED_ARCH=arm64
 EOF
 ```

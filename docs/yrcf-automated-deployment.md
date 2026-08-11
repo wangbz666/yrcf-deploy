@@ -137,12 +137,12 @@ chmod +x yrfs-etcd-deploy.sh yrfs-format-disk.sh yrfs-deploy.sh
 
 脚本完成：
 
-- 创建etcd用户和数据目录。
-- 生成etcd配置。
+- 创建etcd用户、数据目录和日志目录（`/var/log/etcd`）。
+- 生成etcd配置（含 `ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log,stderr`）。
 - 生成systemd服务。
 - 配置etcdctl环境。
 
-脚本不会自动启动etcd。
+脚本不会自动启动etcd。启动后运行日志写入 `/var/log/etcd/etcd.log`，同时仍可通过 `journalctl -u etcd` 查看。
 
 在node1、node2执行：
 
@@ -279,6 +279,8 @@ yrcli \
 
 ## 10. 查看日志
 
+部署脚本日志：
+
 ```text
 /var/log/yrfs-etcd-deploy.log
 /var/log/yrfs-format-disk.log
@@ -286,6 +288,18 @@ yrcli \
 /var/log/yrfs-deploy-mds.log
 /var/log/yrfs-deploy-oss.log
 /var/log/yrfs-deploy-agent.log
+```
+
+etcd 运行日志（各 etcd 节点）：
+
+```text
+/var/log/etcd/etcd.log
+```
+
+也可使用：
+
+```bash
+journalctl -u etcd -f
 ```
 
 ## 11. 卸载与重新部署

@@ -22,7 +22,7 @@ Usage:
   ./yrfs-uninstall.sh --clean -f [--debug]
 
 Modes:
-  --clean   Stop YRFS, uninstall etcd (service/conf/data), clear mounted /data data,
+  --clean   Stop YRFS, uninstall etcd (service/conf/data/logs), clear mounted /data data,
             remove all generated configs (public, mgmt, MDS/OSS/Agent). Keep packages,
             mounts/fstab, yrfs-mgr.conf and deploy conf.
   --purge   Do --clean, then umount + clean fstab, remove yrfs-mgr.conf, purge yrfs
@@ -381,15 +381,17 @@ echo "etcd_state=${etcd_state}"
 test ! -e /usr/lib/systemd/system/etcd.service && echo "etcd_unit=absent" || echo "etcd_unit=present"
 test ! -e /var/lib/etcd && echo "etcd_data=absent" || echo "etcd_data=present"
 test ! -e /etc/etcd/etcd.conf && echo "etcd_conf=absent" || echo "etcd_conf=present"
+test ! -e /var/log/etcd && echo "etcd_log=absent" || echo "etcd_log=present"
 CMD
 )")
         echo "[${ip}]"
         echo "${out}"
-        # clean/purge 均要求 etcd 已停止且服务/配置/数据已删除
+        # clean/purge 均要求 etcd 已停止且服务/配置/数据/日志已删除
         echo "${out}" | grep -q 'etcd_state=active' && failed=1
         echo "${out}" | grep -q 'etcd_unit=absent' || failed=1
         echo "${out}" | grep -q 'etcd_data=absent' || failed=1
         echo "${out}" | grep -q 'etcd_conf=absent' || failed=1
+        echo "${out}" | grep -q 'etcd_log=absent' || failed=1
     done
 
     echo "----- residual check end -----"
@@ -492,15 +494,16 @@ CMD
 done
 
 ######################## 5. 停止并卸载 etcd ########################
-debug "卸载 etcd（服务/配置/数据）开始..."
+debug "卸载 etcd（服务/配置/数据/日志）开始..."
 
 for ip in "${ETCD_NODES[@]}"; do
-    remote_exec "${ip}" "Uninstall etcd service and data" "$(cat <<'CMD'
+    remote_exec "${ip}" "Uninstall etcd service, data and logs" "$(cat <<'CMD'
 set -euo pipefail
 systemctl stop etcd 2>/dev/null || true
 systemctl disable --now etcd 2>/dev/null || true
 rm -f /etc/etcd/etcd.conf
 rm -rf /var/lib/etcd
+rm -rf /var/log/etcd
 rm -f /usr/lib/systemd/system/etcd.service
 systemctl daemon-reload
 systemctl reset-failed 2>/dev/null || true
@@ -509,7 +512,7 @@ CMD
 )" >/dev/null
 done
 
-debug "卸载 etcd（服务/配置/数据）完成"
+debug "卸载 etcd（服务/配置/数据/日志）完成"
 
 ######################## 6. 清理磁盘数据（仅已挂载） ########################
 debug "清理挂载点数据开始..."

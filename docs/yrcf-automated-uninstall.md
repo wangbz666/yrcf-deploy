@@ -12,7 +12,7 @@
 
 | 模式 | 作用 | 对应手工卸载 |
 |---|---|---|
-| `--clean` | 停 YRFS → 卸 etcd（服务/配置/数据）→ 清已挂载数据 → 清全部生成配置（公共配置 `net` / `net_plane.yaml` / `ipwhitelist`、`ipwhitelist-mgmt` / `net-mgmt`、MDS/OSS/Agent 实例配置）；**保留**软件包、挂载/fstab、`yrfs-mgr.conf`、部署配置 | 清理后可再跑自动化部署脚本 |
+| `--clean` | 停 YRFS → 卸 etcd（服务/配置/数据/日志）→ 清已挂载数据 → 清全部生成配置（公共配置 `net` / `net_plane.yaml` / `ipwhitelist`、`ipwhitelist-mgmt` / `net-mgmt`、MDS/OSS/Agent 实例配置）；**保留**软件包、挂载/fstab、`yrfs-mgr.conf`、部署配置 | 清理后可再跑自动化部署脚本 |
 | `--purge` | 在 `--clean` 上再 umount+清 fstab → 删 `yrfs-mgr.conf` → 卸 yrfs 包（etcd 二进制默认保留） | 彻底卸载 |
 | `--check` | 只检查残留，不修改系统 | 验收 |
 
@@ -64,7 +64,7 @@ chmod +x yrfs-uninstall.sh
 ```text
 # 1. 停 Agent / OSS / MDS / MGR（并兜底扫剩余 yrfs 服务）
 # 2. 卸载 etcd：stop + disable --now，删除 /etc/etcd/etcd.conf、
-#    /var/lib/etcd、/usr/lib/systemd/system/etcd.service，
+#    /var/lib/etcd、/var/log/etcd、/usr/lib/systemd/system/etcd.service，
 #    daemon-reload + reset-failed（etcd 二进制保留）
 # 3. 仅对已挂载的 /data/mds* /data/oss* 清空内容（findmnt 判断）
 # 4. 删除全部生成配置：
@@ -99,7 +99,7 @@ chmod +x yrfs-uninstall.sh
 |---|---|
 | `--remove-deploy-conf` | 删除运行脚本的控制节点上的部署配置文件；默认是 `/etc/yrfs/yrfs-deploy.conf`，若使用了 `--config FILE`，则删除该指定文件。默认不删除，便于后续参考或重新部署 |
 | `--remove-script-logs` | `--purge` 验收成功后，删除控制节点上的 etcd、磁盘格式化、MGR/MDS/OSS/Agent 部署日志以及本次卸载日志。若验收失败则保留日志，便于排查 |
-| `--remove-etcd-binaries` | 在各 etcd 节点额外删除 `/usr/bin/etcd`、`/usr/bin/etcdctl` 和 `etcd` 用户；不加此参数时只删除 etcd 服务、配置和数据 |
+| `--remove-etcd-binaries` | 在各 etcd 节点额外删除 `/usr/bin/etcd`、`/usr/bin/etcdctl` 和 `etcd` 用户；不加此参数时只删除 etcd 服务、配置、数据和日志 |
 
 其中，`--remove-deploy-conf` 和 `--remove-script-logs` 只清理执行卸载脚本的控制节点，不会通过 SSH 删除其他节点上的同名文件。
 
@@ -120,7 +120,7 @@ chmod +x yrfs-uninstall.sh
 ./yrfs-uninstall.sh --check --debug
 ```
 
-`--check` 按 **clean 标准**检查（服务停干净、挂载点内无数据、生成配置已删、etcd 服务/配置/数据已删）。  
+`--check` 按 **clean 标准**检查（服务停干净、挂载点内无数据、生成配置已删、etcd 服务/配置/数据/日志已删）。  
 若刚做完 `--purge`，还可用同一命令查看整体残留；挂载/fstab/软件包/`yrfs-mgr.conf` 是否清干净以脚本 `--purge` 结束时的验收输出为准。
 
 ## 5. 脚本流程
@@ -130,7 +130,7 @@ chmod +x yrfs-uninstall.sh
 →（--check：验收并退出）
 → 二次确认（yes / -f 跳过）
 → 停 Agent → 停 OSS → 停 MDS → 停 MGR → 兜底停剩余 yrfs
-→ 卸载 etcd（stop/disable + 删 conf/数据/unit + daemon-reload）
+→ 卸载 etcd（stop/disable + 删 conf/数据/日志/unit + daemon-reload）
 → 清已挂载数据目录内容
 → 清全部生成配置（保留 yrfs-mgr.conf 与 yrfs-deploy.conf）
 →（--purge：umount+fstab → 卸包 + 删 yrfs-mgr.conf →（可选）删 etcd 二进制）
