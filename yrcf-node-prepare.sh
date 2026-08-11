@@ -704,8 +704,8 @@ configure_logrotate() {
 
     mkdir -p /etc/logrotate.d
 
-    # 与现网参考机（如 192.168.21.10）保持一致：copytruncate + maxsize + compress
     cat > /etc/logrotate.d/yrfs <<'EOF'
+su root root
 compress
 /var/log/yrfs*.log {
     rotate 10
@@ -716,8 +716,8 @@ compress
 }
 EOF
 
-    # 覆盖 /var/log/etcd.log 与 /var/log/etcd/*.log（本仓库 etcd 部署路径）
     cat > /etc/logrotate.d/etcd <<'EOF'
+su root root
 compress
 /var/log/etcd*.log
 /var/log/etcd/*.log {

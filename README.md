@@ -131,6 +131,7 @@ chmod +x yrcf-node-prepare.sh
 **1. `/etc/logrotate.d/yrfs`**
 
 ```text
+su root root
 compress
 /var/log/yrfs*.log {
     rotate 10
@@ -144,6 +145,7 @@ compress
 **2. `/etc/logrotate.d/etcd`**
 
 ```text
+su root root
 compress
 /var/log/etcd*.log
 /var/log/etcd/*.log {
@@ -178,6 +180,7 @@ systemctl enable --now cron
 
 ```bash
 cat > /etc/logrotate.d/yrfs <<'EOF'
+su root root
 compress
 /var/log/yrfs*.log {
     rotate 10
@@ -189,6 +192,7 @@ compress
 EOF
 
 cat > /etc/logrotate.d/etcd <<'EOF'
+su root root
 compress
 /var/log/etcd*.log
 /var/log/etcd/*.log {
