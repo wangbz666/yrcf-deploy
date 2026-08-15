@@ -138,11 +138,11 @@ chmod +x yrfs-etcd-deploy.sh yrfs-format-disk.sh yrfs-deploy.sh
 脚本完成：
 
 - 创建etcd用户、数据目录和日志目录（`/var/log/etcd`）。
-- 生成etcd配置（含 `ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log,stderr`）。
+- 生成etcd配置（含 `ETCD_LOG_OUTPUTS=/var/log/etcd/etcd.log`）。
 - 生成systemd服务。
 - 配置etcdctl环境。
 
-脚本不会自动启动etcd。启动后运行日志写入 `/var/log/etcd/etcd.log`，同时仍可通过 `journalctl -u etcd` 查看。
+脚本不会自动启动etcd。启动后运行日志写入 `/var/log/etcd/etcd.log`（etcd v3.4 的 capnslog 只支持一个 `--log-outputs`，不能同时写文件和 stderr）。
 
 在node1、node2执行：
 
@@ -296,11 +296,7 @@ etcd 运行日志（各 etcd 节点）：
 /var/log/etcd/etcd.log
 ```
 
-也可使用：
-
-```bash
-journalctl -u etcd -f
-```
+`journalctl -u etcd` 只能看到 systemd 启停信息；业务日志在上述文件中。
 
 ## 11. 卸载与重新部署
 
