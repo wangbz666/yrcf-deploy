@@ -29,35 +29,52 @@
 
 ## 2. 停止YRFS服务
 
-### 2.1 停止Agent和OSS
+### 2.1 停止并取消开机自启
+
+在**所有**节点执行（不要只依赖角色列表；包装在某节点上也可能被误 enable）：
+
+```bash
+force_stop_disable() {
+  local u="${1%.service}"
+  systemctl stop "$u" 2>/dev/null || true
+  systemctl disable "$u" >/dev/null 2>&1 || true
+  # 若同时存在 /etc/init.d/yrfs-* 且 Default-Start 为空，
+  # systemctl disable 会因 update-rc.d 失败而留下 wants 软链
+  rm -f "/etc/systemd/system/multi-user.target.wants/${u}.service"
+}
+
+for u in yrfs-agent yrfs-mgr yrfs-oss@oss0 yrfs-oss@oss1 yrfs-mds@mds0; do
+  force_stop_disable "$u"
+done
+
+# 扫仍 active/activating 或仍 enabled 的 yrfs*
+systemctl list-units --type=service --state=active,activating,failed --no-legend 2>/dev/null \
+  | awk '$1 ~ /^yrfs/ {sub(/\.service$/,"",$1); print $1}' \
+  | while read -r u; do force_stop_disable "$u"; done
+
+systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+  | awk '$1 ~ /^yrfs/ && $2 ~ /enabled/ {sub(/\.service$/,"",$1); print $1}' \
+  | while read -r u; do force_stop_disable "$u"; done
+
+systemctl daemon-reload
+systemctl reset-failed 2>/dev/null || true
+```
+
+### 2.2 检查YRFS服务
 
 在所有节点执行：
 
 ```bash
-systemctl stop yrfs-agent 2>/dev/null || true
-systemctl stop yrfs-oss@oss0 2>/dev/null || true
-systemctl stop yrfs-oss@oss1 2>/dev/null || true
-```
-
-### 2.2 停止MDS和MGR
-
-在node1、node2执行：
-
-```bash
-systemctl stop yrfs-mds@mds0 2>/dev/null || true
-systemctl stop yrfs-mgr 2>/dev/null || true
-```
-
-### 2.3 检查YRFS服务
-
-在所有节点执行：
-
-```bash
-systemctl list-units --type=service --state=active --no-legend |
+systemctl list-units --type=service --state=active,activating --no-legend |
   awk '$1 ~ /^yrfs/ {print $1}'
+
+systemctl list-unit-files --type=service --no-legend |
+  awk '$1 ~ /^yrfs/ && $2 ~ /enabled/ {print $1}'
+
+ls /etc/systemd/system/multi-user.target.wants/yrfs* 2>/dev/null || true
 ```
 
-命令不应输出任何仍在运行的YRFS服务。如果存在输出，应先停止对应服务再继续。
+以上均不应再有 yrfs 输出。若 `systemctl disable` 报 `Default-Start contains no runlevels`，按上面手动删 wants 软链即可。
 
 ## 3. 清理etcd中的YRCF数据
 

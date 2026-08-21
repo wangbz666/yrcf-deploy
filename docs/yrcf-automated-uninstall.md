@@ -63,7 +63,8 @@ chmod +x yrfs-uninstall.sh
 `--clean` 完成：
 
 ```text
-# 1. 停 Agent / OSS / MDS / MGR（并兜底扫剩余 yrfs 服务）
+# 1. 在全部节点 stop+disable 所有 yrfs*（含误 enable 的节点；
+#    disable 若因 SysV/update-rc.d 失败则手动删 multi-user.target.wants 软链）
 # 2. etcdctl del --prefix=true /yrcf/ 执行 3 遍（在首个 etcd 节点），第 3 遍必须返回 0
 # 3. 卸载 etcd：stop + disable --now，删除 /etc/etcd/etcd.conf、
 #    /var/lib/etcd、/var/log/etcd、/usr/lib/systemd/system/etcd.service，
@@ -131,7 +132,7 @@ chmod +x yrfs-uninstall.sh
 读配置 → 校验 → 打印计划 → SSH 检查
 →（--check：验收并退出）
 → 二次确认（yes / -f 跳过）
-→ 停 Agent → 停 OSS → 停 MDS → 停 MGR → 兜底停剩余 yrfs
+→ 全部节点 stop+disable 所有 yrfs*（SysV disable 失败则清 wants 软链）
 → etcdctl del --prefix=true /yrcf/（执行 3 遍，第 3 遍必须 status=0）
 → 卸载 etcd（stop/disable + 删 conf/数据/日志/unit + daemon-reload）
 → 清已挂载数据目录内容

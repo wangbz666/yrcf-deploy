@@ -327,8 +327,17 @@ run_check() {
         out=$(remote_exec "${ip}" "Check YRFS residual on ${ip}" "$(cat <<'CMD'
 set -euo pipefail
 echo "=== node check ==="
-active=$(systemctl list-units --type=service --state=active --no-legend 2>/dev/null | awk '$1 ~ /^yrfs/ {print $1}' | tr '\n' ' ')
+active=$(systemctl list-units --type=service --state=active,activating --no-legend 2>/dev/null | awk '$1 ~ /^yrfs/ {print $1}' | tr '\n' ' ')
 echo "yrfs_active=${active:-none}"
+enabled=$(systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '$1 ~ /^yrfs/ && $2 ~ /enabled/ {print $1}' | tr '\n' ' ')
+wants=""
+shopt -s nullglob
+for _w in /etc/systemd/system/multi-user.target.wants/yrfs*.service; do
+  wants+="$(basename "${_w}") "
+done
+shopt -u nullglob
+echo "yrfs_enabled=${enabled:-none}"
+echo "yrfs_wants=${wants:-none}"
 mounts=$(findmnt -rn 2>/dev/null | awk '/\/data\/(mds|oss)/ {print $1}' | tr '\n' ' ')
 echo "yrcf_mounts=${mounts:-none}"
 fstab_hits=$(grep -E '(/data/mds|/data/oss)' /etc/fstab 2>/dev/null | wc -l || true)
@@ -365,6 +374,8 @@ CMD
         echo "[${ip}]"
         echo "${out}"
         echo "${out}" | grep -q 'yrfs_active=none' || failed=1
+        echo "${out}" | grep -q 'yrfs_enabled=none' || failed=1
+        echo "${out}" | grep -q 'yrfs_wants=none' || failed=1
         echo "${out}" | grep -q 'mounted_data_leftover=0' || failed=1
         echo "${out}" | grep -q 'yrfs_gen_conf_present=0' || failed=1
         if [[ "${expect_purge}" == "true" ]]; then
@@ -427,74 +438,65 @@ else
     echo "Confirmed. Continue uninstall..."
 fi
 
-######################## 4. 停止 YRFS 服务 ########################
-debug "停止 Agent/OSS 开始..."
+######################## 4. 停止并 disable YRFS 服务 ########################
+# 说明：
+# - 不只依赖 mgr_ip/mds_ip 等角色列表：包常装在所有节点，可能被误 enable（如 .97 上的 mgr）
+# - systemctl disable 在同时存在 /etc/init.d/yrfs-* 且 Default-Start 为空时，
+#   会因 update-rc.d 失败而整体失败，wants 软链不删、仍显示 enabled；
+#   因此 disable 失败后手动删除 *.wants 下的 enable 软链
+debug "停止并 disable YRFS 服务开始（全部节点）..."
 
-for ip in "${AGENT_NODES[@]}"; do
-    remote_exec "${ip}" "Stop yrfs-agent" "$(cat <<'CMD'
-set -euo pipefail
-systemctl stop yrfs-agent 2>/dev/null || true
-systemctl disable yrfs-agent 2>/dev/null || true
-true
-CMD
-)" >/dev/null
-done
-
-for ip in "${OSS_NODES[@]}"; do
-    remote_exec "${ip}" "Stop yrfs-oss instances" "$(cat <<'CMD'
-set -euo pipefail
-systemctl stop yrfs-oss@oss0 2>/dev/null || true
-systemctl stop yrfs-oss@oss1 2>/dev/null || true
-systemctl disable yrfs-oss@oss0 2>/dev/null || true
-systemctl disable yrfs-oss@oss1 2>/dev/null || true
-true
-CMD
-)" >/dev/null
-done
-
-debug "停止 Agent/OSS 完成"
-
-debug "停止 MDS/MGR 开始..."
-
-for ip in "${MDS_NODES[@]}"; do
-    remote_exec "${ip}" "Stop yrfs-mds" "$(cat <<'CMD'
-set -euo pipefail
-systemctl stop yrfs-mds@mds0 2>/dev/null || true
-systemctl disable yrfs-mds@mds0 2>/dev/null || true
-true
-CMD
-)" >/dev/null
-done
-
-for ip in "${MGR_NODES[@]}"; do
-    remote_exec "${ip}" "Stop yrfs-mgr" "$(cat <<'CMD'
-set -euo pipefail
-systemctl stop yrfs-mgr 2>/dev/null || true
-systemctl disable yrfs-mgr 2>/dev/null || true
-true
-CMD
-)" >/dev/null
-done
-
-debug "停止 MDS/MGR 完成"
-
-# 兜底：所有节点再扫一遍仍 active 的 yrfs 服务
 for ip in "${ALL_NODES[@]}"; do
-    remote_exec "${ip}" "Stop any remaining yrfs services" "$(cat <<'CMD'
+    remote_exec "${ip}" "Stop and disable all yrfs services" "$(cat <<'CMD'
 set -euo pipefail
-units=()
-while IFS= read -r u; do
-  [[ -n "$u" ]] && units+=("$u")
-done < <(systemctl list-units --type=service --state=active --no-legend 2>/dev/null | awk '$1 ~ /^yrfs/ {sub(/\.service$/,"",$1); print $1}')
-if [[ ${#units[@]} -gt 0 ]]; then
-  for u in "${units[@]}"; do
-    systemctl stop "$u" 2>/dev/null || true
+
+force_stop_disable() {
+  local u="${1%.service}"
+  [[ -z "${u}" ]] && return 0
+  systemctl stop "${u}" 2>/dev/null || true
+  systemctl disable "${u}" >/dev/null 2>&1 || true
+  # SysV 同步失败时 systemctl disable 可能未删软链
+  rm -f "/etc/systemd/system/multi-user.target.wants/${u}.service"
+  shopt -s nullglob
+  local link
+  for link in /etc/systemd/system/*.wants/"${u}.service"; do
+    rm -f "${link}"
   done
-fi
+  shopt -u nullglob
+}
+
+# 常见实例（节点上可能不存在，忽略错误）
+for u in yrfs-agent yrfs-mgr yrfs-oss@oss0 yrfs-oss@oss1 yrfs-mds@mds0; do
+  force_stop_disable "${u}"
+done
+
+# 仍 active / activating / failed 的 yrfs*
+while IFS= read -r u; do
+  [[ -n "${u}" ]] && force_stop_disable "${u}"
+done < <(systemctl list-units --type=service --state=active,activating,failed --no-legend 2>/dev/null \
+  | awk '$1 ~ /^yrfs/ {sub(/\.service$/,"",$1); print $1}')
+
+# 仍 enabled 的 yrfs*（含未在角色列表中的节点）
+while IFS= read -r u; do
+  [[ -n "${u}" ]] && force_stop_disable "${u}"
+done < <(systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+  | awk '$1 ~ /^yrfs/ && $2 ~ /enabled/ {sub(/\.service$/,"",$1); print $1}')
+
+# 直接扫 multi-user.target.wants 残留
+shopt -s nullglob
+for link in /etc/systemd/system/multi-user.target.wants/yrfs*.service; do
+  force_stop_disable "$(basename "${link}" .service)"
+done
+shopt -u nullglob
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl reset-failed 2>/dev/null || true
 true
 CMD
 )" >/dev/null
 done
+
+debug "停止并 disable YRFS 服务完成"
 
 ######################## 4.5 清理 etcd 中 /yrcf/ 元数据 ########################
 debug "清理 etcd /yrcf/ 前缀开始（etcdctl del --prefix=true，执行 3 遍）..."
