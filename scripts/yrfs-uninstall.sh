@@ -22,9 +22,9 @@ Usage:
   ./yrfs-uninstall.sh --clean -f [--debug]
 
 Modes:
-  --clean   Stop YRFS, uninstall etcd (service/conf/data/logs), clear mounted /data data,
-            remove all generated configs (public, mgmt, MDS/OSS/Agent). Keep packages,
-            mounts/fstab, yrfs-mgr.conf and deploy conf.
+  --clean   Stop YRFS, etcdctl del /yrcf/ (3x), uninstall etcd (service/conf/data/logs),
+            clear mounted /data data, remove all generated configs (public, mgmt, MDS/OSS/Agent).
+            Keep packages, mounts/fstab, yrfs-mgr.conf and deploy conf.
   --purge   Do --clean, then umount + clean fstab, remove yrfs-mgr.conf, purge yrfs
             packages (etcd binaries kept by default).
   --check   Check residuals only (non-destructive).
@@ -234,6 +234,7 @@ MDS_IP_VALUE=""
 MGR_IP_VALUE=""
 ETCD_IP_VALUE=""
 AGENT_IP_VALUE=""
+ETCD_ROOT_PASS=""
 
 while IFS='=' read -r key value; do
     [[ -z "${key}" || "${key}" =~ ^[[:space:]]*# ]] && continue
@@ -248,6 +249,7 @@ while IFS='=' read -r key value; do
         mgr_ip) MGR_IP_VALUE="${value}" ;;
         etcd_ip) ETCD_IP_VALUE="${value}" ;;
         agent_ip) AGENT_IP_VALUE="${value}" ;;
+        etcd_root_password) ETCD_ROOT_PASS="${value}" ;;
     esac
 done < "${CONFIG_FILE}"
 
@@ -298,6 +300,7 @@ echo "mds nodes:            ${MDS_NODES[*]}"
 echo "mgr nodes:            ${MGR_NODES[*]}"
 echo "etcd nodes:           ${ETCD_NODES[*]}"
 echo "agent nodes:          ${AGENT_NODES[*]}"
+echo "etcd_root_password:   $([ -n "${ETCD_ROOT_PASS}" ] && echo set || echo unset)"
 echo "remove_deploy_conf:   ${REMOVE_DEPLOY_CONF}"
 echo "remove_script_logs:   ${REMOVE_SCRIPT_LOGS}"
 echo "remove_etcd_binaries: ${REMOVE_ETCD_BINARIES}"
@@ -492,6 +495,47 @@ true
 CMD
 )" >/dev/null
 done
+
+######################## 4.5 清理 etcd 中 /yrcf/ 元数据 ########################
+debug "清理 etcd /yrcf/ 前缀开始（etcdctl del --prefix=true，执行 3 遍）..."
+
+ETCDCTL_ENDPOINTS=""
+for ip in "${ETCD_NODES[@]}"; do
+    ETCDCTL_ENDPOINTS+="http://${ip}:2379,"
+done
+ETCDCTL_ENDPOINTS="${ETCDCTL_ENDPOINTS%,}"
+
+ETCD_DEL_TARGET="${ETCD_NODES[0]}"
+ETCD_USER_OPT=""
+if [[ -n "${ETCD_ROOT_PASS}" ]]; then
+    ETCD_USER_OPT="--user=root:$(printf '%q' "${ETCD_ROOT_PASS}")"
+fi
+
+for attempt in 1 2 3; do
+    debug "etcdctl del /yrcf/ 第 ${attempt}/3 次（节点 ${ETCD_DEL_TARGET}）..."
+    if out=$(sshpass -p "${ROOT_PASS}" ssh ${SSH_OPTS} root@"${ETCD_DEL_TARGET}" bash -s <<CMD 2>&1
+set -euo pipefail
+export ETCDCTL_API=3
+command -v etcdctl >/dev/null 2>&1 || { echo "ERROR: etcdctl not found on ${ETCD_DEL_TARGET}"; exit 1; }
+etcdctl --endpoints='${ETCDCTL_ENDPOINTS}' ${ETCD_USER_OPT} del --prefix=true /yrcf/
+CMD
+    ); then
+        status=0
+    else
+        status=$?
+    fi
+    log "${ETCD_DEL_TARGET}" "etcdctl del --prefix=true /yrcf/ (attempt ${attempt}/3)" "${out}" "" "${status}"
+    if [[ "${attempt}" -eq 3 ]]; then
+        if [[ "${status}" -ne 0 ]]; then
+            echo "ERROR: etcdctl del --prefix=true /yrcf/ 第 3 次失败 (status=${status})"
+            echo "${out}"
+            exit 1
+        fi
+        echo "etcdctl del --prefix=true /yrcf/ 第 3 次成功 (status=0)"
+    fi
+done
+
+debug "清理 etcd /yrcf/ 前缀完成"
 
 ######################## 5. 停止并卸载 etcd ########################
 debug "卸载 etcd（服务/配置/数据/日志）开始..."

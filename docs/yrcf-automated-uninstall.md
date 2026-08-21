@@ -39,8 +39,9 @@ chmod +x yrfs-uninstall.sh
 | `oss_ip` | 必配 | 推导全部存储节点（每组首个 IP 用于 SSH） |
 | `mds_ip` | 必配 | MDS 节点 |
 | `mgr_ip` | 必配 | MGR 节点 |
-| `etcd_ip` | 必配 | etcd 节点；决定在哪些节点卸载 etcd |
+| `etcd_ip` | 必配 | etcd 节点；决定在哪些节点清理 `/yrcf/` 并卸载 etcd |
 | `agent_ip` | 可选 | 有则按该列表停 Agent；无则对所有 `oss_ip` 节点尝试停 Agent |
+| `etcd_root_password` | 可选 | etcd 已开认证时，用于 `etcdctl --user=root:...`；未开认证可不配 |
 
 其余部署项（磁盘、白名单等）卸载脚本不读取。
 
@@ -63,11 +64,12 @@ chmod +x yrfs-uninstall.sh
 
 ```text
 # 1. 停 Agent / OSS / MDS / MGR（并兜底扫剩余 yrfs 服务）
-# 2. 卸载 etcd：stop + disable --now，删除 /etc/etcd/etcd.conf、
+# 2. etcdctl del --prefix=true /yrcf/ 执行 3 遍（在首个 etcd 节点），第 3 遍必须返回 0
+# 3. 卸载 etcd：stop + disable --now，删除 /etc/etcd/etcd.conf、
 #    /var/lib/etcd、/var/log/etcd、/usr/lib/systemd/system/etcd.service，
 #    daemon-reload + reset-failed（etcd 二进制保留）
-# 3. 仅对已挂载的 /data/mds* /data/oss* 清空内容（findmnt 判断）
-# 4. 删除全部生成配置：
+# 4. 仅对已挂载的 /data/mds* /data/oss* 清空内容（findmnt 判断）
+# 5. 删除全部生成配置：
 #    - oss*.d / mds*.d / yrfs-agent.conf
 #    - net-mds / net-oss / net-agent / ipwhitelist-mds* / ipwhitelist-oss* / ipwhitelist-agent
 #    - net / net_plane.yaml / ipwhitelist（公共配置）
@@ -130,6 +132,7 @@ chmod +x yrfs-uninstall.sh
 →（--check：验收并退出）
 → 二次确认（yes / -f 跳过）
 → 停 Agent → 停 OSS → 停 MDS → 停 MGR → 兜底停剩余 yrfs
+→ etcdctl del --prefix=true /yrcf/（执行 3 遍，第 3 遍必须 status=0）
 → 卸载 etcd（stop/disable + 删 conf/数据/日志/unit + daemon-reload）
 → 清已挂载数据目录内容
 → 清全部生成配置（保留 yrfs-mgr.conf 与 yrfs-deploy.conf）
@@ -140,6 +143,7 @@ chmod +x yrfs-uninstall.sh
 | 步骤 | 已做过会怎样 |
 |---|---|
 | 停服务 | 不存在则忽略，继续 |
+| 清 /yrcf/ | 第 3 遍失败则中止，不继续卸 etcd |
 | 卸 etcd | 服务/文件不存在则忽略 |
 | 清数据 | 未挂载目录跳过，不误删本地空目录 |
 | 删配置 | 文件不在则跳过 |
